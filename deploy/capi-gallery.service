@@ -1,0 +1,21 @@
+[Unit]
+Description=CAPI private gallery
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/srv/capi-gallery
+EnvironmentFile=/srv/capi-gallery/.env
+ExecStart=/usr/bin/python3 /srv/capi-gallery/server.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/capi-gallery/data /srv/capi-gallery/uploads
+
+[Install]
+WantedBy=multi-user.target

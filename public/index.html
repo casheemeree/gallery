@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#ffffff" />
+    <title>CAPI — Private Gallery</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main id="gallery" class="gallery" aria-hidden="true">
+      <div id="viewport" class="gallery__viewport" aria-label="Infinite image gallery">
+        <div id="world" class="gallery__world"></div>
+      </div>
+
+      <div class="gallery__mark" aria-hidden="true">CAPI</div>
+
+      <button id="addButton" class="glass-button add-button" type="button" aria-label="Add image">
+        <svg viewBox="0 0 20 20" aria-hidden="true">
+          <path d="M10 3.2v13.6M3.2 10h13.6" />
+        </svg>
+      </button>
+      <input id="fileInput" class="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp,image/gif" />
+
+      <div id="scrollHint" class="scroll-hint glass-panel" aria-hidden="true">
+        <span>DRAG TO EXPLORE</span>
+        <svg viewBox="0 0 24 24"><path d="M5 12h14M15 8l4 4-4 4M9 8l-4 4 4 4" /></svg>
+      </div>
+    </main>
+
+    <section id="login" class="login" aria-label="Access code">
+      <div class="login__glow" aria-hidden="true"></div>
+      <form id="loginForm" class="code-pill glass-panel" autocomplete="off">
+        <label class="visually-hidden" for="codeInput">10 digit access code</label>
+        <input
+          id="codeInput"
+          name="code"
+          type="password"
+          inputmode="numeric"
+          pattern="[0-9]{10}"
+          maxlength="10"
+          placeholder="INPUT CODE"
+          aria-describedby="loginStatus"
+          required
+        />
+        <button id="goButton" class="go-button" type="submit" aria-label="Enter gallery">
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M2.4 8h10.8M8.7 3.5 13.2 8l-4.5 4.5" />
+          </svg>
+        </button>
+      </form>
+      <p id="loginStatus" class="login__status" role="status" aria-live="polite"></p>
+    </section>
+
+    <dialog id="preview" class="preview">
+      <div class="preview__backdrop"></div>
+      <div class="preview__content">
+        <button id="closePreview" class="glass-button preview__close" type="button" aria-label="Close preview">
+          <svg viewBox="0 0 20 20" aria-hidden="true">
+            <path d="m4.7 4.7 10.6 10.6M15.3 4.7 4.7 15.3" />
+          </svg>
+        </button>
+        <figure class="preview__figure">
+          <img id="previewImage" alt="" />
+          <figcaption id="previewCaption"></figcaption>
+        </figure>
+      </div>
+    </dialog>
+
+    <div id="toast" class="toast glass-panel" role="status" aria-live="polite"></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
