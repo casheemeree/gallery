@@ -33,7 +33,7 @@ const state = {
   pointerX: 0,
   pointerY: 0,
   dragDistance: 0,
-  pressedImageIndex: null,
+  pressedImageId: null,
   moved: false,
   currentPreviewImageId: null,
   previewOpenedAt: 0,
@@ -45,7 +45,22 @@ const ACCESS_CODE_PATTERN = /^[A-Za-z0-9]{10}$/;
 const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
 const DELETE_HOLD_MS = 2000;
 const PREVIEW_CLICK_GUARD_MS = 260;
-let dimensionCorrectionFrame = 0;
+
+function resizeRenderedTiles(imageRecord) {
+  const nextBox = imageBox(imageRecord);
+  const imageId = String(imageRecord.id);
+  world.querySelectorAll(".gallery__tile").forEach((tile) => {
+    if (tile.dataset.imageId !== imageId) return;
+    const width = Number.parseFloat(tile.style.width) || nextBox.width;
+    const height = Number.parseFloat(tile.style.height) || nextBox.height;
+    const left = Number.parseFloat(tile.style.left) || 0;
+    const top = Number.parseFloat(tile.style.top) || 0;
+    tile.style.left = `${left + (width - nextBox.width) / 2}px`;
+    tile.style.top = `${top + (height - nextBox.height) / 2}px`;
+    tile.style.width = `${nextBox.width}px`;
+    tile.style.height = `${nextBox.height}px`;
+  });
+}
 
 function reconcileImageDimensions(element, imageRecord) {
   const width = element.naturalWidth;
@@ -58,11 +73,7 @@ function reconcileImageDimensions(element, imageRecord) {
 
   imageRecord.width = width;
   imageRecord.height = height;
-  if (dimensionCorrectionFrame) return;
-  dimensionCorrectionFrame = window.requestAnimationFrame(() => {
-    dimensionCorrectionFrame = 0;
-    renderWorld(false);
-  });
+  resizeRenderedTiles(imageRecord);
 }
 
 function revealTileImage(image) {
@@ -77,8 +88,7 @@ function revealTileImage(image) {
   window.setTimeout(finish, 1400);
 }
 
-function handleTileImageLoad(image) {
-  const imageRecord = state.images[Number(image.dataset.imageIndex)];
+function handleTileImageLoad(image, imageRecord) {
   reconcileImageDimensions(image, imageRecord);
   revealTileImage(image);
   if (imageRecord?.needsThumbnail) backfillThumbnail(imageRecord, image);
@@ -232,11 +242,11 @@ function createTile(image, x, y, width, height, imageIndex) {
   button.className = "gallery__tile";
   button.type = "button";
   button.setAttribute("aria-label", `Open ${image.name || "image"}`);
-  button.dataset.imageIndex = String(imageIndex % state.images.length);
+  button.dataset.imageId = String(image.id);
   button.style.cssText = `left:${x}px;top:${y}px;width:${width}px;height:${height}px`;
   const img = document.createElement("img");
   const source = image.thumbnailUrl || image.url;
-  img.addEventListener("load", () => handleTileImageLoad(img), { once: true });
+  img.addEventListener("load", () => handleTileImageLoad(img, image), { once: true });
   img.style.setProperty("--bubble-delay", `${(imageIndex * 37) % 260}ms`);
   if (imageObserver) {
     img.dataset.src = source;
@@ -245,12 +255,11 @@ function createTile(image, x, y, width, height, imageIndex) {
     img.src = source;
   }
   img.alt = "";
-  img.dataset.imageIndex = String(imageIndex % state.images.length);
   img.loading = "lazy";
   img.decoding = "async";
   img.fetchPriority = "low";
   button.append(img);
-  if (img.complete && img.naturalWidth) queueMicrotask(() => handleTileImageLoad(img));
+  if (img.complete && img.naturalWidth) queueMicrotask(() => handleTileImageLoad(img, image));
   return button;
 }
 
@@ -366,7 +375,7 @@ viewport.addEventListener("pointerdown", (event) => {
   state.moved = false;
   state.dragDistance = 0;
   const pressedTile = event.target.closest(".gallery__tile");
-  state.pressedImageIndex = pressedTile ? Number(pressedTile.dataset.imageIndex) : null;
+  state.pressedImageId = pressedTile ? Number(pressedTile.dataset.imageId) : null;
   state.pointerX = event.clientX;
   state.pointerY = event.clientY;
   viewport.classList.add("is-dragging");
@@ -385,14 +394,14 @@ viewport.addEventListener("pointermove", (event) => {
 });
 
 function finishDrag(event) {
-  const imageIndex = state.pressedImageIndex;
-  const shouldOpenPreview = event.type === "pointerup" && !state.moved && Number.isInteger(imageIndex);
+  const imageId = state.pressedImageId;
+  const shouldOpenPreview = event.type === "pointerup" && !state.moved && Number.isInteger(imageId);
   state.dragging = false;
-  state.pressedImageIndex = null;
+  state.pressedImageId = null;
   viewport.classList.remove("is-dragging");
   if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
   if (shouldOpenPreview) {
-    const image = state.images[imageIndex];
+    const image = state.images.find((item) => item.id === imageId);
     if (image) openPreview(image);
   }
 }
@@ -406,7 +415,8 @@ viewport.addEventListener("click", (event) => {
   if (event.detail !== 0) return;
   const tile = event.target.closest(".gallery__tile");
   if (!tile) return;
-  const image = state.images[Number(tile.dataset.imageIndex)];
+  const imageId = Number(tile.dataset.imageId);
+  const image = state.images.find((item) => item.id === imageId);
   if (image) openPreview(image);
 });
 
