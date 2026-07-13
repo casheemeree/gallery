@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import base64
+import binascii
+import getpass
 import hashlib
 import hmac
 import json
@@ -11,6 +13,7 @@ import mimetypes
 import secrets
 import sqlite3
 import struct
+import sys
 import time
 from collections import defaultdict, deque
 from http import HTTPStatus
@@ -32,15 +35,45 @@ def b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
 
 
-def derive_proof(code: str, nonce: str) -> str:
-    key = hashlib.pbkdf2_hmac(
+def b64url_decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    try:
+        return base64.b64decode(value + padding, altchars=b"-_", validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise ValueError("invalid base64url value") from error
+
+
+def derive_access_key(code: str, salt: str | None = None) -> bytes:
+    return hashlib.pbkdf2_hmac(
         "sha256",
         code.encode("utf-8"),
-        config.PBKDF2_SALT.encode("utf-8"),
+        (salt or config.PBKDF2_SALT).encode("utf-8"),
         config.PBKDF2_ITERATIONS,
         dklen=32,
     )
+
+
+def derive_proof_for_key(key: bytes, nonce: str) -> str:
     return b64url(hmac.new(key, nonce.encode("ascii"), hashlib.sha256).digest())
+
+
+def derive_proof(code: str, nonce: str) -> str:
+    return derive_proof_for_key(derive_access_key(code), nonce)
+
+
+def configured_access_key() -> bytes:
+    if config.ACCESS_KEY:
+        try:
+            key = b64url_decode(config.ACCESS_KEY)
+        except ValueError as error:
+            raise RuntimeError("ACCESS_KEY must be valid base64url") from error
+        if len(key) != 32:
+            raise RuntimeError("ACCESS_KEY must decode to exactly 32 bytes")
+        return key
+    return derive_access_key(config.ACCESS_CODE)
+
+
+SERVER_ACCESS_KEY = configured_access_key()
 
 
 def detect_image_type(data: bytes) -> str | None:
@@ -283,7 +316,7 @@ class GalleryHandler(BaseHTTPRequestHandler):
         proof = str(body.get("proof", ""))
         challenge = CHALLENGES.pop(nonce, None)
         valid_challenge = challenge and challenge[0] >= now and challenge[1] == ip
-        expected = derive_proof(config.ACCESS_CODE, nonce) if valid_challenge else "invalid"
+        expected = derive_proof_for_key(SERVER_ACCESS_KEY, nonce) if valid_challenge else "invalid"
         if not valid_challenge or not hmac.compare_digest(proof, expected):
             failures.append(now)
             self.send_json({"error": "wrong_code"}, HTTPStatus.UNAUTHORIZED)
@@ -414,7 +447,27 @@ def create_server(host: str = config.HOST, port: int = config.PORT) -> Threading
     return ThreadingHTTPServer((host, port), GalleryHandler)
 
 
+def generate_access_key_cli() -> int:
+    code = getpass.getpass("10-digit access code: ").strip()
+    confirmation = getpass.getpass("Repeat access code: ").strip()
+    if code != confirmation:
+        print("Codes do not match", file=sys.stderr)
+        return 1
+    if len(code) != 10 or not code.isdigit():
+        print("Code must contain exactly 10 digits", file=sys.stderr)
+        return 1
+    salt = b64url(secrets.token_bytes(16))
+    print(f"PBKDF2_SALT={salt}")
+    print(f"ACCESS_KEY={b64url(derive_access_key(code, salt))}")
+    return 0
+
+
 if __name__ == "__main__":
+    if sys.argv[1:] == ["generate-access-key"]:
+        raise SystemExit(generate_access_key_cli())
+    if sys.argv[1:]:
+        print("Usage: python3 server.py [generate-access-key]", file=sys.stderr)
+        raise SystemExit(2)
     server = create_server()
     print(f"Private Gallery running at http://{config.HOST}:{config.PORT}")
     try:

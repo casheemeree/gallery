@@ -24,10 +24,11 @@ Open <http://127.0.0.1:8080>. The default local code is `1234567890`.
 
 ## Authentication model
 
-The 10-digit code lives only in the server environment. The browser requests a
-one-time nonce, derives a key with PBKDF2, and sends an HMAC proof. The plain code
-is never included in the HTTP request. Successful verification creates an
-HttpOnly, SameSite session cookie and a separate CSRF token for uploads.
+The browser requests a one-time nonce, derives a key from the 10-digit code with
+PBKDF2, and sends an HMAC proof. The plain code is never included in the HTTP
+request. Production stores only the derived `ACCESS_KEY` verifier in `.env`, not
+the original code. Successful verification creates an HttpOnly, SameSite session
+cookie and a separate CSRF token for uploads.
 
 This protocol must still run over HTTPS: a ten-digit code has limited entropy,
 and TLS protects the session and proof from network observers. Failed attempts
@@ -36,9 +37,17 @@ accounts or a PAKE-based login.
 
 ## Configuration
 
-Copy `.env.example` to the server's `/srv/capi-gallery/.env` and edit it. The
-standard-library server reads environment variables directly, so either export
-the file in your shell or let the included systemd unit load it.
+Generate the production verifier and its matching random salt in a trusted
+terminal; input is hidden:
+
+```bash
+python3 server.py generate-access-key
+```
+
+Copy `.env.example` to `/srv/capi-gallery/.env`, paste both printed values, set
+permissions to `600`, and never add the file to Git. The standard-library server
+reads environment variables directly, so either export them in your shell or let
+the included systemd unit load the file.
 
 Uploads are stored in `uploads/`; metadata is stored in `data/gallery.sqlite3`.
 Both are intentionally excluded from Git and should be backed up separately.
@@ -51,6 +60,11 @@ Both are intentionally excluded from Git and should be backed up separately.
    example to the real domain and TLS certificate.
 4. Add GitHub repository secrets: `SERVER_HOST`, `SERVER_USER`, and `DEPLOY_KEY`.
 5. A push to `main` runs tests and then calls `deploy/deploy.sh` over SSH.
+
+Until all three secrets are present, the workflow runs the tests and intentionally
+skips deployment instead of failing while trying to configure SSH. A domain is not
+needed for the SSH connection itself; it is needed later for the Nginx server name
+and HTTPS certificate.
 
 The service user needs write access to `/srv/capi-gallery/data` and
 `/srv/capi-gallery/uploads`. The deploy user needs narrowly scoped permission to

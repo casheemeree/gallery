@@ -1,4 +1,20 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@500;600&display=swap");
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 500 600;
+  font-display: swap;
+  src: url("/fonts/inter-cyrillic.woff2") format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 500 600;
+  font-display: swap;
+  src: url("/fonts/inter-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
 
 :root {
   color-scheme: light;
@@ -308,18 +324,6 @@ button {
   stroke-linejoin: round;
 }
 
-.login__status {
-  position: absolute;
-  top: calc(50% + 34px);
-  min-height: 16px;
-  margin: 0;
-  color: #d9464d;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
 .preview {
   position: fixed;
   z-index: 30;
@@ -333,18 +337,7 @@ button {
   border: 0;
   overflow: hidden;
   background: transparent;
-  opacity: 0;
-  transition: opacity 300ms ease, display 300ms allow-discrete, overlay 300ms allow-discrete;
-}
-
-.preview[open] {
   opacity: 1;
-}
-
-@starting-style {
-  .preview[open] {
-    opacity: 0;
-  }
 }
 
 .preview::backdrop {
@@ -357,6 +350,8 @@ button {
   background: rgba(0, 0, 0, 0.54);
   -webkit-backdrop-filter: blur(25px) saturate(110%);
   backdrop-filter: blur(25px) saturate(110%);
+  transform: translateZ(0);
+  will-change: backdrop-filter;
 }
 
 .preview__content {

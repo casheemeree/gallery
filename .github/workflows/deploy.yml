@@ -8,24 +8,27 @@ on:
 jobs:
   test-and-deploy:
     runs-on: ubuntu-latest
+    env:
+      SERVER_HOST: ${{ secrets.SERVER_HOST }}
+      SERVER_USER: ${{ secrets.SERVER_USER }}
+      DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.14"
       - name: Run tests
         run: python -m unittest discover -s tests -v
+      - name: Report skipped deployment
+        if: ${{ env.SERVER_HOST == '' || env.SERVER_USER == '' || env.DEPLOY_KEY == '' }}
+        run: echo "::notice::Tests passed. Deployment was skipped because SERVER_HOST, SERVER_USER, or DEPLOY_KEY is not configured."
       - name: Configure SSH
-        env:
-          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
-          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+        if: ${{ env.SERVER_HOST != '' && env.SERVER_USER != '' && env.DEPLOY_KEY != '' }}
         run: |
           install -m 700 -d ~/.ssh
           printf '%s' "$DEPLOY_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts
       - name: Deploy current main branch
-        env:
-          SERVER_HOST: ${{ secrets.SERVER_HOST }}
-          SERVER_USER: ${{ secrets.SERVER_USER }}
+        if: ${{ env.SERVER_HOST != '' && env.SERVER_USER != '' && env.DEPLOY_KEY != '' }}
         run: ssh -i ~/.ssh/deploy_key "$SERVER_USER@$SERVER_HOST" 'cd /srv/capi-gallery && ./deploy/deploy.sh'

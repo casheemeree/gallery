@@ -25,6 +25,14 @@ class AuthTests(unittest.TestCase):
     def test_wrong_code_creates_different_proof(self) -> None:
         self.assertNotEqual(server.derive_proof(config.ACCESS_CODE, "nonce"), server.derive_proof("0000000000", "nonce"))
 
+    def test_proof_can_be_verified_from_stored_key(self) -> None:
+        key = server.derive_access_key(config.ACCESS_CODE)
+        self.assertEqual(server.derive_proof(config.ACCESS_CODE, "nonce"), server.derive_proof_for_key(key, "nonce"))
+
+    def test_access_key_round_trip(self) -> None:
+        key = server.derive_access_key(config.ACCESS_CODE)
+        self.assertEqual(server.b64url_decode(server.b64url(key)), key)
+
 
 class ImageTests(unittest.TestCase):
     def test_detects_supported_signatures(self) -> None:

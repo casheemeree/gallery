@@ -5,7 +5,6 @@ const login = document.querySelector("#login");
 const loginForm = document.querySelector("#loginForm");
 const codeInput = document.querySelector("#codeInput");
 const goButton = document.querySelector("#goButton");
-const loginStatus = document.querySelector("#loginStatus");
 const addButton = document.querySelector("#addButton");
 const fileInput = document.querySelector("#fileInput");
 const preview = document.querySelector("#preview");
@@ -31,8 +30,9 @@ const state = {
   dragging: false,
   pointerX: 0,
   pointerY: 0,
+  dragDistance: 0,
+  pressedImageIndex: null,
   moved: false,
-  suppressClick: false,
 };
 
 const encoder = new TextEncoder();
@@ -101,13 +101,13 @@ async function enterGallery() {
   login.classList.add("is-hidden");
 }
 
-function setLoginError(message) {
+function setLoginError() {
   loginForm.classList.remove("is-error");
   void loginForm.offsetWidth;
   loginForm.classList.add("is-error");
-  loginStatus.textContent = message;
   codeInput.value = "";
-  codeInput.placeholder = "WRONG CODE";
+  codeInput.placeholder = "INPUT CODE";
+  codeInput.setAttribute("aria-invalid", "true");
   codeInput.focus();
 }
 
@@ -115,11 +115,10 @@ loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const code = codeInput.value.replace(/\D/g, "");
   if (code.length !== 10) {
-    setLoginError("Enter all 10 digits");
+    setLoginError();
     return;
   }
   goButton.disabled = true;
-  loginStatus.textContent = "";
   try {
     const result = await authenticate(code);
     state.csrf = result.csrf;
@@ -127,7 +126,7 @@ loginForm.addEventListener("submit", async (event) => {
     codeInput.value = "";
     await enterGallery();
   } catch (error) {
-    setLoginError(error.message === "rate_limited" ? "Try again in one minute" : "Wrong code");
+    setLoginError();
   } finally {
     goButton.disabled = false;
   }
@@ -137,7 +136,7 @@ codeInput.addEventListener("input", () => {
   const clean = codeInput.value.replace(/\D/g, "").slice(0, 10);
   if (codeInput.value !== clean) codeInput.value = clean;
   loginForm.classList.remove("is-error");
-  loginStatus.textContent = "";
+  codeInput.removeAttribute("aria-invalid");
   codeInput.placeholder = "INPUT CODE";
 });
 
@@ -288,6 +287,9 @@ viewport.addEventListener("pointerdown", (event) => {
   if (event.button !== 0) return;
   state.dragging = true;
   state.moved = false;
+  state.dragDistance = 0;
+  const pressedTile = event.target.closest(".gallery__tile");
+  state.pressedImageIndex = pressedTile ? Number(pressedTile.dataset.imageIndex) : null;
   state.pointerX = event.clientX;
   state.pointerY = event.clientY;
   viewport.classList.add("is-dragging");
@@ -298,32 +300,33 @@ viewport.addEventListener("pointermove", (event) => {
   if (!state.dragging) return;
   const deltaX = event.clientX - state.pointerX;
   const deltaY = event.clientY - state.pointerY;
-  if (Math.abs(deltaX) + Math.abs(deltaY) > 3) state.moved = true;
+  state.dragDistance += Math.hypot(deltaX, deltaY);
+  if (state.dragDistance > 8) state.moved = true;
   state.pointerX = event.clientX;
   state.pointerY = event.clientY;
   moveWorld(deltaX, deltaY);
 });
 
 function finishDrag(event) {
-  if (state.moved) {
-    state.suppressClick = true;
-    window.setTimeout(() => {
-      state.suppressClick = false;
-    }, 0);
-  }
+  const imageIndex = state.pressedImageIndex;
+  const shouldOpenPreview = event.type === "pointerup" && !state.moved && Number.isInteger(imageIndex);
   state.dragging = false;
+  state.pressedImageIndex = null;
   viewport.classList.remove("is-dragging");
   if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
+  if (shouldOpenPreview) {
+    const image = state.images[imageIndex];
+    if (image) openPreview(image);
+  }
 }
 
 viewport.addEventListener("pointerup", finishDrag);
 viewport.addEventListener("pointercancel", finishDrag);
 
 viewport.addEventListener("click", (event) => {
-  if (state.suppressClick) {
-    event.preventDefault();
-    return;
-  }
+  // Pointer clicks are handled on pointerup so pointer capture cannot change
+  // their target. Keep native keyboard activation for the image buttons.
+  if (event.detail !== 0) return;
   const tile = event.target.closest(".gallery__tile");
   if (!tile) return;
   const image = state.images[Number(tile.dataset.imageIndex)];
@@ -331,9 +334,9 @@ viewport.addEventListener("click", (event) => {
 });
 
 function openPreview(image) {
-  previewImage.src = image.url;
-  previewImage.alt = image.name || "Gallery image";
   if (!preview.open) preview.showModal();
+  previewImage.alt = image.name || "Gallery image";
+  previewImage.src = image.url;
 }
 
 function closePreviewDialog() {
