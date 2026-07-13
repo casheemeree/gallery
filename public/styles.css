@@ -37,6 +37,8 @@ body {
   height: 100%;
   margin: 0;
   overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: none;
   background: var(--background);
 }
 
@@ -529,6 +531,10 @@ button {
 
   .add-button {
     bottom: max(18px, calc(env(safe-area-inset-bottom) + 12px));
+  }
+
+  .code-pill input {
+    font-size: 16px;
   }
 
   .preview__content {

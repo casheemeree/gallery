@@ -45,6 +45,32 @@ const ACCESS_CODE_PATTERN = /^[A-Za-z0-9]{10}$/;
 const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
 const DELETE_HOLD_MS = 2000;
 const PREVIEW_CLICK_GUARD_MS = 260;
+const ZOOM_KEYS = new Set(["+", "-", "="]);
+
+function blockZoomGesture(event) {
+  event.preventDefault();
+  event.stopPropagation();
+}
+
+document.addEventListener(
+  "wheel",
+  (event) => {
+    if (event.ctrlKey) blockZoomGesture(event);
+  },
+  { passive: false, capture: true },
+);
+
+document.addEventListener(
+  "keydown",
+  (event) => {
+    if ((event.ctrlKey || event.metaKey) && ZOOM_KEYS.has(event.key)) blockZoomGesture(event);
+  },
+  { capture: true },
+);
+
+["gesturestart", "gesturechange", "gestureend"].forEach((eventName) => {
+  document.addEventListener(eventName, blockZoomGesture, { passive: false, capture: true });
+});
 
 function resizeRenderedTiles(imageRecord) {
   const nextBox = imageBox(imageRecord);

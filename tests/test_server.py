@@ -57,6 +57,15 @@ class AuthTests(unittest.TestCase):
         self.assertIn("SameSite=Strict", cookie)
 
 
+class PublicUiTests(unittest.TestCase):
+    def test_viewport_locks_page_scale_to_one_hundred_percent(self) -> None:
+        html = (config.PUBLIC_DIR / "index.html").read_text(encoding="utf-8")
+        self.assertIn("initial-scale=1", html)
+        self.assertIn("minimum-scale=1", html)
+        self.assertIn("maximum-scale=1", html)
+        self.assertIn("user-scalable=no", html)
+
+
 class AccessCodeStoreTests(unittest.TestCase):
     def test_json_stores_multiple_derived_keys_without_plain_codes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
