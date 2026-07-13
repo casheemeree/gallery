@@ -25,14 +25,17 @@
     <section id="login" class="login" aria-label="Access code">
       <div class="login__glow" aria-hidden="true"></div>
       <form id="loginForm" class="code-pill glass-panel" autocomplete="off">
-        <label class="visually-hidden" for="codeInput">10 digit access code</label>
+        <label class="visually-hidden" for="codeInput">10 character access code</label>
         <input
           id="codeInput"
           name="code"
           type="password"
-          inputmode="numeric"
-          pattern="[0-9]{10}"
+          inputmode="text"
+          pattern="[A-Za-z0-9]{10}"
           maxlength="10"
+          autocapitalize="none"
+          autocorrect="off"
+          spellcheck="false"
           placeholder="INPUT CODE"
           required
         />
@@ -66,6 +69,6 @@
     </dialog>
 
     <div id="toast" class="toast glass-panel" role="status" aria-live="polite"></div>
-    <script type="module" src="/app.js?v=11"></script>
+    <script type="module" src="/app.js?v=12"></script>
   </body>
 </html>

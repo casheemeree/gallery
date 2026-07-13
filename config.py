@@ -35,7 +35,12 @@ CHALLENGE_TTL_SECONDS = int(os.getenv("CHALLENGE_TTL_SECONDS", "120"))
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(15 * 1024 * 1024)))
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "0") == "1"
 
+
+def is_valid_access_code(value: str) -> bool:
+    return len(value) == 10 and value.isascii() and value.isalnum()
+
+
 if ACCESS_CODE and ACCESS_KEY:
     raise RuntimeError("Set ACCESS_KEY or ACCESS_CODE, not both")
-if ACCESS_CODE and (len(ACCESS_CODE) != 10 or not ACCESS_CODE.isdigit()):
-    raise RuntimeError("ACCESS_CODE must contain exactly 10 digits")
+if ACCESS_CODE and not is_valid_access_code(ACCESS_CODE):
+    raise RuntimeError("ACCESS_CODE must contain exactly 10 ASCII letters or digits")

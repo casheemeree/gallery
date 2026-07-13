@@ -41,6 +41,7 @@ const state = {
 
 const encoder = new TextEncoder();
 const thumbnailJobs = new Set();
+const ACCESS_CODE_PATTERN = /^[A-Za-z0-9]{10}$/;
 const DELETE_HOLD_MS = 2000;
 const PREVIEW_CLICK_GUARD_MS = 260;
 
@@ -155,8 +156,8 @@ function setLoginError() {
 
 loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const code = codeInput.value.replace(/\D/g, "");
-  if (code.length !== 10) {
+  const code = codeInput.value;
+  if (!ACCESS_CODE_PATTERN.test(code)) {
     setLoginError();
     return;
   }
@@ -175,7 +176,7 @@ loginForm.addEventListener("submit", async (event) => {
 });
 
 codeInput.addEventListener("input", () => {
-  const clean = codeInput.value.replace(/\D/g, "").slice(0, 10);
+  const clean = codeInput.value.replace(/[^A-Za-z0-9]/g, "").slice(0, 10);
   if (codeInput.value !== clean) codeInput.value = clean;
   loginForm.classList.remove("is-error");
   codeInput.removeAttribute("aria-invalid");

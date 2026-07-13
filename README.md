@@ -32,8 +32,9 @@ continues to use the original. Versioned image URLs are cached for one year.
 
 ## Authentication model
 
-The browser requests a one-time nonce, derives a key from the 10-digit code with
-PBKDF2, and sends an HMAC proof. The plain code is never included in the HTTP
+The browser requests a one-time nonce, derives a key with PBKDF2 from the
+case-sensitive 10-character ASCII letter-and-digit code, and sends an HMAC
+proof. The plain code is never included in the HTTP
 request. Production stores only derived verifiers in `data/access-codes.json`,
 never the original codes. Successful verification creates an HttpOnly,
 SameSite=Strict session cookie and a separate CSRF token for uploads and deletion.
@@ -43,7 +44,7 @@ server does not sign visitors out. The cookie lasts up to 400 days and its expir
 is refreshed whenever the gallery is opened. Removing an access code also revokes
 every session created with that code.
 
-This protocol must still run over HTTPS: a ten-digit code has limited entropy,
+This protocol must still run over HTTPS: a shared access code has limited entropy,
 and TLS protects the session and proof from network observers. Failed attempts
 are rate-limited. For a larger public service, replace the shared code with user
 accounts or a PAKE-based login.
@@ -60,7 +61,8 @@ python3 server.py access-code list
 python3 server.py access-code remove <id>
 ```
 
-`add` asks for the 10-digit code twice using hidden input. The JSON contains a
+`add` asks for the 10-character code twice using hidden input. Codes accept
+uppercase and lowercase Latin letters plus digits. The JSON contains a
 shared random salt, PBKDF2 settings, labels, IDs and derived keys only. It is
 written atomically with permissions `600`. Labels help identify a code; removal
 uses the short ID printed by `list`.

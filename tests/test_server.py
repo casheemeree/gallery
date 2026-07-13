@@ -16,6 +16,14 @@ import server
 
 
 class AuthTests(unittest.TestCase):
+    def test_access_codes_accept_only_ten_ascii_letters_or_digits(self) -> None:
+        self.assertTrue(config.is_valid_access_code("AbCd1234Xy"))
+        self.assertTrue(config.is_valid_access_code("ABCDEFGHIJ"))
+        self.assertTrue(config.is_valid_access_code("1234567890"))
+        self.assertFalse(config.is_valid_access_code("short123"))
+        self.assertFalse(config.is_valid_access_code("Abcd1234-_"))
+        self.assertFalse(config.is_valid_access_code("Аbcd1234Xy"))
+
     def test_proof_matches_protocol(self) -> None:
         nonce = "test-nonce"
         key = hashlib.pbkdf2_hmac(
@@ -30,6 +38,9 @@ class AuthTests(unittest.TestCase):
 
     def test_wrong_code_creates_different_proof(self) -> None:
         self.assertNotEqual(server.derive_proof(config.ACCESS_CODE, "nonce"), server.derive_proof("0000000000", "nonce"))
+
+    def test_access_codes_are_case_sensitive(self) -> None:
+        self.assertNotEqual(server.derive_proof("AbCd1234Xy", "nonce"), server.derive_proof("abcd1234xy", "nonce"))
 
     def test_proof_can_be_verified_from_stored_key(self) -> None:
         key = server.derive_access_key(config.ACCESS_CODE)
@@ -76,14 +87,14 @@ class AccessCodeStoreTests(unittest.TestCase):
             self.assertEqual(len(server.access_code_set(path)[2]), 2)
             self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
 
-    @mock.patch.object(server, "prompt_new_access_code", return_value="1234567890")
+    @mock.patch.object(server, "prompt_new_access_code", return_value="AbCd1234Xy")
     def test_cli_adds_code_to_new_json(self, _prompt: mock.Mock) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "access-codes.json"
             self.assertEqual(server.add_access_code_cli("Local", path), 0)
             store = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(store["codes"][0]["label"], "Local")
-            self.assertNotIn("1234567890", path.read_text(encoding="utf-8"))
+            self.assertNotIn("AbCd1234Xy", path.read_text(encoding="utf-8"))
             code_id = store["codes"][0]["id"]
             with mock.patch.object(config, "DATABASE_PATH", Path(temporary_directory) / "missing.sqlite3"):
                 self.assertEqual(server.remove_access_code_cli(code_id, path), 0)

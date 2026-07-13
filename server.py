@@ -773,13 +773,13 @@ def create_server(host: str = config.HOST, port: int = config.PORT) -> Threading
 
 
 def generate_access_key_cli() -> int:
-    code = getpass.getpass("10-digit access code: ").strip()
+    code = getpass.getpass("10-character access code (A-Z, a-z, 0-9): ").strip()
     confirmation = getpass.getpass("Repeat access code: ").strip()
     if code != confirmation:
         print("Codes do not match", file=sys.stderr)
         return 1
-    if len(code) != 10 or not code.isdigit():
-        print("Code must contain exactly 10 digits", file=sys.stderr)
+    if not config.is_valid_access_code(code):
+        print("Code must contain exactly 10 ASCII letters or digits", file=sys.stderr)
         return 1
     salt = b64url(secrets.token_bytes(16))
     print(f"PBKDF2_SALT={salt}")
@@ -788,13 +788,13 @@ def generate_access_key_cli() -> int:
 
 
 def prompt_new_access_code() -> str | None:
-    code = getpass.getpass("10-digit access code: ").strip()
+    code = getpass.getpass("10-character access code (A-Z, a-z, 0-9): ").strip()
     confirmation = getpass.getpass("Repeat access code: ").strip()
     if code != confirmation:
         print("Codes do not match", file=sys.stderr)
         return None
-    if len(code) != 10 or not code.isdigit():
-        print("Code must contain exactly 10 digits", file=sys.stderr)
+    if not config.is_valid_access_code(code):
+        print("Code must contain exactly 10 ASCII letters or digits", file=sys.stderr)
         return None
     return code
 
