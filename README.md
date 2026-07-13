@@ -23,7 +23,8 @@ described below; the local fallback is used only while the JSON file is absent.
 - A trackpad scrolls vertically and horizontally; `Shift + wheel` scrolls horizontally.
 - Click an image to open the blurred preview.
 - Hold `Delete` in the preview for two seconds to remove an image; releasing early resets the action.
-- Use the centered plus button to upload JPEG, PNG, WebP, or GIF files up to 15 MB.
+- Use the centered plus button to select and upload one or more JPEG, PNG, WebP,
+  or GIF files up to 15 MB each.
 - Under 600 px the gallery uses 3 columns; at 600 px and above it uses 5.
 
 Only images close to the viewport are requested. New uploads also receive a

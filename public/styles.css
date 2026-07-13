@@ -137,20 +137,6 @@ button {
   transform: translateZ(0);
 }
 
-.gallery__tile::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border: 1px solid rgba(0, 0, 0, 0.04);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 180ms ease;
-}
-
-.gallery__tile.is-loaded::after {
-  opacity: 1;
-}
-
 .gallery__tile img {
   display: block;
   width: 100%;
@@ -208,17 +194,19 @@ button {
 .add-button {
   position: fixed;
   z-index: 5;
-  left: 50%;
+  left: 0;
+  right: 0;
   bottom: max(28px, calc(env(safe-area-inset-bottom) + 18px));
-  transform: translateX(-50%);
+  margin-inline: auto;
+  transform: none;
 }
 
 .add-button:hover {
-  transform: translateX(-50%) translateY(-2px);
+  transform: translateY(-2px);
 }
 
 .add-button:active {
-  transform: translateX(-50%) scale(0.96);
+  transform: scale(0.96);
 }
 
 .add-button.is-uploading img {

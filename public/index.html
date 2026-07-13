@@ -7,7 +7,7 @@
     <title>Private Gallery</title>
     <link rel="icon" href="/favicon.png" type="image/png" />
     <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin />
-    <link rel="stylesheet" href="/styles.css?v=7" />
+    <link rel="stylesheet" href="/styles.css?v=8" />
   </head>
   <body>
     <main id="gallery" class="gallery" aria-hidden="true">
@@ -18,7 +18,13 @@
       <button id="addButton" class="glass-button add-button" type="button" aria-label="Add image">
         <img src="/icons/add.svg?v=2" alt="" draggable="false" />
       </button>
-      <input id="fileInput" class="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp,image/gif" />
+      <input
+        id="fileInput"
+        class="visually-hidden"
+        type="file"
+        accept="image/jpeg,image/png,image/webp,image/gif"
+        multiple
+      />
 
     </main>
 
@@ -69,6 +75,6 @@
     </dialog>
 
     <div id="toast" class="toast glass-panel" role="status" aria-live="polite"></div>
-    <script type="module" src="/app.js?v=12"></script>
+    <script type="module" src="/app.js?v=13"></script>
   </body>
 </html>

@@ -42,8 +42,28 @@ const state = {
 const encoder = new TextEncoder();
 const thumbnailJobs = new Set();
 const ACCESS_CODE_PATTERN = /^[A-Za-z0-9]{10}$/;
+const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
 const DELETE_HOLD_MS = 2000;
 const PREVIEW_CLICK_GUARD_MS = 260;
+let dimensionCorrectionFrame = 0;
+
+function reconcileImageDimensions(element, imageRecord) {
+  const width = element.naturalWidth;
+  const height = element.naturalHeight;
+  if (!width || !height || !imageRecord) return;
+
+  const recordedRatio = Math.max(1, Number(imageRecord.width) || 1) / Math.max(1, Number(imageRecord.height) || 1);
+  const renderedRatio = width / height;
+  if (Math.abs(Math.log(recordedRatio / renderedRatio)) < 0.01) return;
+
+  imageRecord.width = width;
+  imageRecord.height = height;
+  if (dimensionCorrectionFrame) return;
+  dimensionCorrectionFrame = window.requestAnimationFrame(() => {
+    dimensionCorrectionFrame = 0;
+    renderWorld(false);
+  });
+}
 
 function revealTileImage(image) {
   if (image.classList.contains("is-bubbling") || image.classList.contains("is-loaded")) return;
@@ -58,8 +78,9 @@ function revealTileImage(image) {
 }
 
 function handleTileImageLoad(image) {
-  revealTileImage(image);
   const imageRecord = state.images[Number(image.dataset.imageIndex)];
+  reconcileImageDimensions(image, imageRecord);
+  revealTileImage(image);
   if (imageRecord?.needsThumbnail) backfillThumbnail(imageRecord, image);
 }
 
@@ -167,6 +188,7 @@ loginForm.addEventListener("submit", async (event) => {
     state.csrf = result.csrf;
     sessionStorage.setItem("gallery_csrf", state.csrf);
     codeInput.value = "";
+    codeInput.blur();
     await enterGallery();
   } catch (error) {
     setLoginError();
@@ -604,7 +626,11 @@ async function thumbnailBlob(drawable, sourceWidth, sourceHeight) {
 async function createThumbnail(file) {
   const bitmap = await createImageBitmap(file);
   try {
-    return await thumbnailBlob(bitmap, bitmap.width, bitmap.height);
+    return {
+      blob: await thumbnailBlob(bitmap, bitmap.width, bitmap.height),
+      width: bitmap.width,
+      height: bitmap.height,
+    };
   } finally {
     bitmap.close();
   }
@@ -634,40 +660,64 @@ async function backfillThumbnail(image, loadedImage) {
   }
 }
 
+async function uploadFile(file) {
+  const thumbnailPromise = createThumbnail(file).catch(() => null);
+  const payload = await api("/api/images", {
+    method: "POST",
+    headers: {
+      "Content-Type": file.type,
+      "X-Filename": encodeURIComponent(file.name),
+      "X-CSRF-Token": state.csrf,
+    },
+    body: file,
+  });
+  const thumbnail = await thumbnailPromise;
+  if (thumbnail) {
+    payload.image.width = thumbnail.width;
+    payload.image.height = thumbnail.height;
+    await uploadThumbnail(payload.image, thumbnail.blob).catch(() => null);
+  }
+  return payload.image;
+}
+
 fileInput.addEventListener("change", async () => {
-  const file = fileInput.files?.[0];
-  if (!file) return;
-  if (!file.type.startsWith("image/")) {
-    showToast("Choose an image file");
+  const selectedFiles = Array.from(fileInput.files || []);
+  if (!selectedFiles.length) return;
+
+  const files = selectedFiles.filter((file) => ALLOWED_IMAGE_TYPES.has(file.type));
+  const rejected = selectedFiles.length - files.length;
+  if (!files.length) {
+    showToast("Choose JPEG, PNG, WebP, or GIF files");
+    fileInput.value = "";
     return;
   }
+
   addButton.classList.add("is-uploading");
   addButton.disabled = true;
+  let uploaded = 0;
+  let failed = rejected;
+
   try {
-    const thumbnailPromise = createThumbnail(file).catch(() => null);
-    const payload = await api("/api/images", {
-      method: "POST",
-      headers: {
-        "Content-Type": file.type,
-        "X-Filename": encodeURIComponent(file.name),
-        "X-CSRF-Token": state.csrf,
-      },
-      body: file,
-    });
-    const thumbnail = await thumbnailPromise;
-    if (thumbnail) {
-      await uploadThumbnail(payload.image, thumbnail).catch(() => null);
+    for (const [index, file] of files.entries()) {
+      if (files.length > 1) showToast(`Uploading ${index + 1} of ${files.length}`);
+      try {
+        const image = await uploadFile(file);
+        state.images.unshift(image);
+        uploaded += 1;
+      } catch (error) {
+        failed += 1;
+        if (error.message === "invalid_csrf") break;
+      }
     }
-    state.images.unshift(payload.image);
-    renderWorld(false);
-    showToast("Image added");
-  } catch (error) {
-    const messages = {
-      file_too_large: "Image is larger than 15 MB",
-      invalid_image: "Unsupported image format",
-      invalid_csrf: "Session expired — reload the page",
-    };
-    showToast(messages[error.message] || "Upload failed");
+
+    if (uploaded) renderWorld(false);
+    if (uploaded && !failed) {
+      showToast(uploaded === 1 ? "Image added" : `${uploaded} images added`);
+    } else if (uploaded) {
+      showToast(`${uploaded} added, ${failed} failed`);
+    } else {
+      showToast("Upload failed");
+    }
   } finally {
     addButton.classList.remove("is-uploading");
     addButton.disabled = false;
@@ -701,7 +751,6 @@ async function bootstrap() {
   } catch {
     // The login screen is already the safe fallback.
   }
-  window.setTimeout(() => codeInput.focus(), 300);
 }
 
 bootstrap();
