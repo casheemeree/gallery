@@ -245,6 +245,29 @@ def db_connect() -> sqlite3.Connection:
     return connection
 
 
+def delete_image_record(image_id: int) -> dict | None:
+    """Hide static images or permanently remove uploaded image files."""
+    with db_connect() as db:
+        row = db.execute(
+            """SELECT id, filename, source, thumbnail_filename
+               FROM images WHERE id = ? AND deleted_at IS NULL""",
+            (image_id,),
+        ).fetchone()
+        if not row:
+            return None
+        image = dict(row)
+        if image["source"] == "upload":
+            db.execute("DELETE FROM images WHERE id = ?", (image_id,))
+        else:
+            db.execute("UPDATE images SET deleted_at = ? WHERE id = ?", (int(time.time()), image_id))
+
+    if image["source"] == "upload":
+        (config.UPLOAD_DIR / image["filename"]).unlink(missing_ok=True)
+        if image["thumbnail_filename"]:
+            (config.THUMBNAIL_DIR / image["thumbnail_filename"]).unlink(missing_ok=True)
+    return image
+
+
 def sync_public_images(db: sqlite3.Connection | None = None) -> int:
     """Index supported files copied into public/images without duplicating rows."""
     own_connection = db is None
@@ -299,6 +322,8 @@ def init_storage() -> None:
         image_columns = {row[1] for row in db.execute("PRAGMA table_info(images)").fetchall()}
         if "thumbnail_filename" not in image_columns:
             db.execute("ALTER TABLE images ADD COLUMN thumbnail_filename TEXT")
+        if "deleted_at" not in image_columns:
+            db.execute("ALTER TABLE images ADD COLUMN deleted_at INTEGER")
         db.execute(
             """
             CREATE TABLE IF NOT EXISTS sessions (
@@ -439,7 +464,7 @@ class GalleryHandler(BaseHTTPRequestHandler):
         if path.startswith("/images/"):
             if not self.require_auth():
                 return
-            return self.serve_public(path)
+            return self.serve_gallery_image(path.removeprefix("/images/"))
         if path.startswith("/uploads/"):
             if not self.require_auth():
                 return
@@ -466,6 +491,17 @@ class GalleryHandler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
             return self.upload_thumbnail(int(raw_id))
         self.send_json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
+
+    def do_DELETE(self) -> None:
+        path = urlparse(self.path).path
+        if not path.startswith("/api/images/"):
+            return self.send_json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
+        if not self.require_auth(csrf=True):
+            return
+        raw_id = path.removeprefix("/api/images/").strip("/")
+        if not raw_id.isdigit():
+            return self.send_json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
+        return self.delete_image(int(raw_id))
 
     def auth_challenge(self) -> None:
         prune_state()
@@ -543,7 +579,7 @@ class GalleryHandler(BaseHTTPRequestHandler):
             rows = db.execute(
                 """SELECT id, filename, original_name, mime, width, height, source,
                           thumbnail_filename, created_at
-                   FROM images ORDER BY id DESC"""
+                   FROM images WHERE deleted_at IS NULL ORDER BY id DESC"""
             ).fetchall()
         images = []
         for row in rows:
@@ -661,6 +697,13 @@ class GalleryHandler(BaseHTTPRequestHandler):
             HTTPStatus.CREATED,
         )
 
+    def delete_image(self, image_id: int) -> None:
+        image = delete_image_record(image_id)
+        if not image:
+            self.send_json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
+            return
+        self.send_json({"ok": True, "id": image_id})
+
     def serve_upload(self, raw_name: str) -> None:
         name = Path(unquote(raw_name)).name
         if not name or name != unquote(raw_name):
@@ -674,6 +717,22 @@ class GalleryHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         self.serve_file(config.THUMBNAIL_DIR / name, cache="private, max-age=31536000, immutable")
+
+    def serve_gallery_image(self, raw_name: str) -> None:
+        name = Path(unquote(raw_name)).name
+        if not name or name != unquote(raw_name):
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        with db_connect() as db:
+            image = db.execute(
+                """SELECT id FROM images
+                   WHERE filename = ? AND source IN ('demo', 'public') AND deleted_at IS NULL""",
+                (name,),
+            ).fetchone()
+        if not image:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        self.serve_file(config.PUBLIC_DIR / "images" / name, cache="private, max-age=31536000, immutable")
 
     def serve_public(self, raw_path: str) -> None:
         path = unquote(raw_path)

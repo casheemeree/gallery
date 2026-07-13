@@ -108,6 +108,23 @@ class AccessCodeStoreTests(unittest.TestCase):
 
 
 class ImageTests(unittest.TestCase):
+    def storage_patches(self, root: Path):
+        public_dir = root / "public"
+        upload_dir = root / "uploads"
+        thumbnail_dir = upload_dir / "thumbnails"
+        public_dir.mkdir()
+        (public_dir / "images").mkdir()
+        upload_dir.mkdir()
+        thumbnail_dir.mkdir()
+        return mock.patch.multiple(
+            config,
+            DATABASE_PATH=root / "data" / "gallery.sqlite3",
+            DATA_DIR=root / "data",
+            PUBLIC_DIR=public_dir,
+            UPLOAD_DIR=upload_dir,
+            THUMBNAIL_DIR=thumbnail_dir,
+        )
+
     def test_detects_supported_signatures(self) -> None:
         self.assertEqual(server.detect_image_type(b"\xff\xd8\xff\x00"), "image/jpeg")
         self.assertEqual(server.detect_image_type(b"\x89PNG\r\n\x1a\nrest"), "image/png")
@@ -137,6 +154,56 @@ class ImageTests(unittest.TestCase):
 
     def test_sanitizes_original_filename(self) -> None:
         self.assertEqual(server.safe_original_name("../../my%20photo!.jpg"), "my photo.jpg")
+
+    def test_delete_uploaded_image_removes_database_row_and_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            with self.storage_patches(root):
+                server.init_storage()
+                original = config.UPLOAD_DIR / "upload.webp"
+                thumbnail = config.THUMBNAIL_DIR / "thumb.webp"
+                original.write_bytes(b"original")
+                thumbnail.write_bytes(b"thumbnail")
+                with server.db_connect() as db:
+                    cursor = db.execute(
+                        """INSERT INTO images
+                           (filename, original_name, mime, width, height, source,
+                            thumbnail_filename, created_at)
+                           VALUES (?, ?, ?, ?, ?, 'upload', ?, ?)""",
+                        ("upload.webp", "upload.webp", "image/webp", 20, 30, "thumb.webp", 1),
+                    )
+                    image_id = cursor.lastrowid
+
+                self.assertIsNotNone(server.delete_image_record(image_id))
+                self.assertFalse(original.exists())
+                self.assertFalse(thumbnail.exists())
+                with server.db_connect() as db:
+                    self.assertIsNone(db.execute("SELECT id FROM images WHERE id = ?", (image_id,)).fetchone())
+
+    def test_delete_public_image_keeps_file_and_creates_tombstone(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            with self.storage_patches(root):
+                server.init_storage()
+                original = config.PUBLIC_DIR / "images" / "public.png"
+                original.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\0" * 8 + (20).to_bytes(4, "big") + (30).to_bytes(4, "big"))
+                with server.db_connect() as db:
+                    cursor = db.execute(
+                        """INSERT INTO images
+                           (filename, original_name, mime, width, height, source, created_at)
+                           VALUES (?, ?, ?, ?, ?, 'public', ?)""",
+                        ("public.png", "public.png", "image/png", 20, 30, 1),
+                    )
+                    image_id = cursor.lastrowid
+
+                self.assertIsNotNone(server.delete_image_record(image_id))
+                self.assertTrue(original.exists())
+                self.assertEqual(server.sync_public_images(), 0)
+                with server.db_connect() as db:
+                    row = db.execute("SELECT deleted_at FROM images WHERE id = ?", (image_id,)).fetchone()
+                    count = db.execute("SELECT COUNT(*) FROM images WHERE filename = 'public.png'").fetchone()[0]
+                self.assertIsNotNone(row["deleted_at"])
+                self.assertEqual(count, 1)
 
 
 if __name__ == "__main__":

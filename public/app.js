@@ -10,6 +10,8 @@ const fileInput = document.querySelector("#fileInput");
 const preview = document.querySelector("#preview");
 const previewImage = document.querySelector("#previewImage");
 const closePreview = document.querySelector("#closePreview");
+const deleteImage = document.querySelector("#deleteImage");
+const deleteLabel = document.querySelector("#deleteLabel");
 const toast = document.querySelector("#toast");
 
 const state = {
@@ -32,12 +34,34 @@ const state = {
   pointerY: 0,
   dragDistance: 0,
   pressedImageIndex: null,
-  pendingPreviewIndex: null,
   moved: false,
+  currentPreviewImageId: null,
+  previewOpenedAt: 0,
 };
 
 const encoder = new TextEncoder();
 const thumbnailJobs = new Set();
+const DELETE_HOLD_MS = 2000;
+const PREVIEW_CLICK_GUARD_MS = 260;
+
+function revealTileImage(image) {
+  if (image.classList.contains("is-bubbling") || image.classList.contains("is-loaded")) return;
+  image.classList.add("is-bubbling");
+  const finish = () => {
+    image.classList.remove("is-bubbling");
+    image.classList.add("is-loaded");
+    image.closest(".gallery__tile")?.classList.add("is-loaded");
+  };
+  image.addEventListener("animationend", finish, { once: true });
+  window.setTimeout(finish, 1400);
+}
+
+function handleTileImageLoad(image) {
+  revealTileImage(image);
+  const imageRecord = state.images[Number(image.dataset.imageIndex)];
+  if (imageRecord?.needsThumbnail) backfillThumbnail(imageRecord, image);
+}
+
 const imageObserver = "IntersectionObserver" in window
   ? new IntersectionObserver(
       (entries) => {
@@ -45,14 +69,6 @@ const imageObserver = "IntersectionObserver" in window
           if (!entry.isIntersecting) return;
           const image = entry.target;
           if (image.dataset.src) {
-            image.addEventListener(
-              "load",
-              () => {
-                const imageRecord = state.images[Number(image.dataset.imageIndex)];
-                if (imageRecord?.needsThumbnail) backfillThumbnail(imageRecord, image);
-              },
-              { once: true },
-            );
             image.src = image.dataset.src;
             image.removeAttribute("data-src");
           }
@@ -197,6 +213,8 @@ function createTile(image, x, y, width, height, imageIndex) {
   button.style.cssText = `left:${x}px;top:${y}px;width:${width}px;height:${height}px`;
   const img = document.createElement("img");
   const source = image.thumbnailUrl || image.url;
+  img.addEventListener("load", () => handleTileImageLoad(img), { once: true });
+  img.style.setProperty("--bubble-delay", `${(imageIndex * 37) % 260}ms`);
   if (imageObserver) {
     img.dataset.src = source;
     imageObserver.observe(img);
@@ -209,6 +227,7 @@ function createTile(image, x, y, width, height, imageIndex) {
   img.decoding = "async";
   img.fetchPriority = "low";
   button.append(img);
+  if (img.complete && img.naturalWidth) queueMicrotask(() => handleTileImageLoad(img));
   return button;
 }
 
@@ -347,24 +366,21 @@ function finishDrag(event) {
   const shouldOpenPreview = event.type === "pointerup" && !state.moved && Number.isInteger(imageIndex);
   state.dragging = false;
   state.pressedImageIndex = null;
-  state.pendingPreviewIndex = shouldOpenPreview ? imageIndex : null;
   viewport.classList.remove("is-dragging");
   if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
+  if (shouldOpenPreview) {
+    const image = state.images[imageIndex];
+    if (image) openPreview(image);
+  }
 }
 
 viewport.addEventListener("pointerup", finishDrag);
 viewport.addEventListener("pointercancel", finishDrag);
 
 viewport.addEventListener("click", (event) => {
-  if (event.detail !== 0) {
-    const imageIndex = state.pendingPreviewIndex;
-    state.pendingPreviewIndex = null;
-    if (!Number.isInteger(imageIndex)) return;
-    const image = state.images[imageIndex];
-    if (image) openPreview(image);
-    return;
-  }
-  // Keyboard activation keeps the native button click target.
+  // Pointer activation is handled on pointerup. Keyboard activation keeps the
+  // native button click target and has detail === 0.
+  if (event.detail !== 0) return;
   const tile = event.target.closest(".gallery__tile");
   if (!tile) return;
   const image = state.images[Number(tile.dataset.imageIndex)];
@@ -372,15 +388,20 @@ viewport.addEventListener("click", (event) => {
 });
 
 function openPreview(image) {
-  if (!preview.open) preview.showModal();
+  resetDeleteControl(true);
+  state.currentPreviewImageId = image.id;
   previewImage.alt = image.name || "Gallery image";
   previewImage.dataset.sourceWidth = String(image.width || 1);
   previewImage.dataset.sourceHeight = String(image.height || 1);
   previewImage.src = image.url;
+  state.previewOpenedAt = performance.now();
+  if (!preview.open) preview.showModal();
 }
 
 function closePreviewDialog() {
-  preview.close();
+  resetDeleteControl(true);
+  if (preview.open) preview.close();
+  state.currentPreviewImageId = null;
   previewImage.removeAttribute("src");
   previewImage.removeAttribute("data-source-width");
   previewImage.removeAttribute("data-source-height");
@@ -405,13 +426,161 @@ function clickHitsRenderedPreviewImage(event) {
   );
 }
 
-closePreview.addEventListener("click", closePreviewDialog);
+let deleteHoldFrame = 0;
+let deleteHoldStartedAt = 0;
+let deleteHoldPointerId = null;
+let deleteHoldKey = null;
+let deletionInProgress = false;
+
+function setDeleteProgress(progress) {
+  const percent = `${Math.max(0, Math.min(1, progress)) * 100}%`;
+  deleteImage.style.setProperty("--delete-progress", percent);
+}
+
+function resetDeleteControl(initial = false) {
+  window.cancelAnimationFrame(deleteHoldFrame);
+  deleteHoldFrame = 0;
+  deleteHoldStartedAt = 0;
+  deleteHoldPointerId = null;
+  deleteHoldKey = null;
+  deleteImage.classList.remove("is-holding", "is-deleting");
+  deleteImage.classList.toggle("is-armed", !initial);
+  deleteLabel.textContent = initial ? "Delete" : "Hold To Delete";
+  deleteImage.setAttribute("aria-label", initial ? "Delete image — hold for 2 seconds" : "Hold for 2 seconds to delete image");
+  setDeleteProgress(0);
+}
+
+function cancelDeleteHold() {
+  if (deletionInProgress || !deleteHoldStartedAt) return;
+  resetDeleteControl(false);
+}
+
+function finishDeleteHold() {
+  if (!deleteHoldStartedAt || deletionInProgress) return;
+  if (performance.now() - deleteHoldStartedAt >= DELETE_HOLD_MS) {
+    completeImageDeletion();
+  } else {
+    cancelDeleteHold();
+  }
+}
+
+function startDeleteHold() {
+  if (deletionInProgress || deleteHoldStartedAt || !Number.isInteger(state.currentPreviewImageId)) return;
+  deleteHoldStartedAt = performance.now();
+  deleteImage.classList.add("is-armed", "is-holding");
+  deleteLabel.textContent = "Hold To Delete";
+  setDeleteProgress(0);
+
+  const update = (now) => {
+    if (!deleteHoldStartedAt || deletionInProgress) return;
+    const progress = Math.min(1, (now - deleteHoldStartedAt) / DELETE_HOLD_MS);
+    setDeleteProgress(progress);
+    if (progress >= 1) {
+      completeImageDeletion();
+      return;
+    }
+    deleteHoldFrame = window.requestAnimationFrame(update);
+  };
+  deleteHoldFrame = window.requestAnimationFrame(update);
+}
+
+async function completeImageDeletion() {
+  if (deletionInProgress || !Number.isInteger(state.currentPreviewImageId)) return;
+  deletionInProgress = true;
+  window.cancelAnimationFrame(deleteHoldFrame);
+  deleteHoldFrame = 0;
+  deleteHoldStartedAt = 0;
+  const imageId = state.currentPreviewImageId;
+  deleteImage.classList.remove("is-holding");
+  deleteImage.classList.add("is-deleting");
+  deleteLabel.textContent = "Deleting…";
+  setDeleteProgress(1);
+  deleteImage.disabled = true;
+  closePreview.disabled = true;
+
+  try {
+    await api(`/api/images/${imageId}`, {
+      method: "DELETE",
+      headers: { "X-CSRF-Token": state.csrf },
+    });
+    state.images = state.images.filter((image) => image.id !== imageId);
+    deletionInProgress = false;
+    closePreviewDialog();
+    renderWorld(false);
+    showToast("Image deleted");
+  } catch (error) {
+    if (error.status === 404) {
+      state.images = state.images.filter((image) => image.id !== imageId);
+      deletionInProgress = false;
+      closePreviewDialog();
+      renderWorld(false);
+      showToast("Image already deleted");
+    } else {
+      deletionInProgress = false;
+      resetDeleteControl(false);
+      const message = error.message === "invalid_csrf" ? "Session expired — reload the page" : "Delete failed";
+      showToast(message);
+    }
+  } finally {
+    deleteImage.disabled = false;
+    closePreview.disabled = false;
+  }
+}
+
+closePreview.addEventListener("click", (event) => {
+  if (deletionInProgress) return;
+  if (event.detail !== 0 && performance.now() - state.previewOpenedAt < PREVIEW_CLICK_GUARD_MS) return;
+  closePreviewDialog();
+});
+
+deleteImage.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0 || deletionInProgress) return;
+  event.preventDefault();
+  deleteHoldPointerId = event.pointerId;
+  deleteImage.setPointerCapture(event.pointerId);
+  startDeleteHold();
+});
+
+function finishDeletePointer(event) {
+  if (deleteHoldPointerId !== event.pointerId) return;
+  deleteHoldPointerId = null;
+  if (deleteImage.hasPointerCapture(event.pointerId)) deleteImage.releasePointerCapture(event.pointerId);
+  finishDeleteHold();
+}
+
+deleteImage.addEventListener("pointerup", finishDeletePointer);
+deleteImage.addEventListener("pointercancel", finishDeletePointer);
+deleteImage.addEventListener("pointerleave", finishDeletePointer);
+deleteImage.addEventListener("lostpointercapture", cancelDeleteHold);
+deleteImage.addEventListener("contextmenu", (event) => event.preventDefault());
+deleteImage.addEventListener("click", (event) => event.preventDefault());
+deleteImage.addEventListener("keydown", (event) => {
+  if (event.repeat || !["Enter", " "].includes(event.key)) return;
+  event.preventDefault();
+  deleteHoldKey = event.key;
+  startDeleteHold();
+});
+deleteImage.addEventListener("keyup", (event) => {
+  if (event.key !== deleteHoldKey) return;
+  event.preventDefault();
+  deleteHoldKey = null;
+  finishDeleteHold();
+});
+
+window.addEventListener("blur", cancelDeleteHold);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) cancelDeleteHold();
+});
+
 preview.addEventListener("cancel", (event) => {
   event.preventDefault();
+  if (deletionInProgress) return;
   closePreviewDialog();
 });
 preview.addEventListener("click", (event) => {
-  if (event.target.closest("#closePreview")) return;
+  if (deletionInProgress) return;
+  if (performance.now() - state.previewOpenedAt < PREVIEW_CLICK_GUARD_MS) return;
+  if (event.target.closest(".preview__actions")) return;
   if (event.target === previewImage && clickHitsRenderedPreviewImage(event)) return;
   closePreviewDialog();
 });

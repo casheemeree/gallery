@@ -22,6 +22,7 @@ described below; the local fallback is used only while the JSON file is absent.
 - Drag in any direction to pan the canvas.
 - A trackpad scrolls vertically and horizontally; `Shift + wheel` scrolls horizontally.
 - Click an image to open the blurred preview.
+- Hold `Delete` in the preview for two seconds to remove an image; releasing early resets the action.
 - Use the centered plus button to upload JPEG, PNG, WebP, or GIF files up to 15 MB.
 - Under 600 px the gallery uses 3 columns; at 600 px and above it uses 5.
 
@@ -35,7 +36,7 @@ The browser requests a one-time nonce, derives a key from the 10-digit code with
 PBKDF2, and sends an HMAC proof. The plain code is never included in the HTTP
 request. Production stores only derived verifiers in `data/access-codes.json`,
 never the original codes. Successful verification creates an HttpOnly,
-SameSite=Strict session cookie and a separate CSRF token for uploads.
+SameSite=Strict session cookie and a separate CSRF token for uploads and deletion.
 
 Sessions are stored in SQLite using a hash of the browser token, so restarting the
 server does not sign visitors out. The cookie lasts up to 400 days and its expiry
@@ -78,6 +79,9 @@ load the file. Production must use HTTPS with `COOKIE_SECURE=1`.
 Uploads and generated thumbnails are stored in `uploads/`; image metadata and
 persistent sessions are stored in `data/gallery.sqlite3`. These files and the
 access-code JSON are excluded from Git and should be backed up separately.
+Deleting an upload removes its original and thumbnail. Repository-provided
+images remain on disk but receive a persistent database tombstone, so Git stays
+clean and the deleted image is no longer listed or served.
 
 ## GitHub → server deployment
 

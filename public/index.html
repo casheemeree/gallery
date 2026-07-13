@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#ffffff" />
     <title>Private Gallery</title>
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon.png" type="image/png" />
     <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin />
-    <link rel="stylesheet" href="/styles.css?v=5" />
+    <link rel="stylesheet" href="/styles.css?v=7" />
   </head>
   <body>
     <main id="gallery" class="gallery" aria-hidden="true">
@@ -16,7 +16,7 @@
       </div>
 
       <button id="addButton" class="glass-button add-button" type="button" aria-label="Add image">
-        <img src="/icons/add.svg" alt="" draggable="false" />
+        <img src="/icons/add.svg?v=2" alt="" draggable="false" />
       </button>
       <input id="fileInput" class="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp,image/gif" />
 
@@ -45,16 +45,27 @@
     <dialog id="preview" class="preview">
       <div class="preview__backdrop"></div>
       <div class="preview__content">
-        <button id="closePreview" class="glass-button preview__close" type="button" aria-label="Close preview">
-          <img src="/icons/close.svg" alt="" draggable="false" />
-        </button>
         <figure class="preview__figure">
           <img id="previewImage" alt="" />
         </figure>
+        <div class="preview__actions">
+          <button id="closePreview" class="glass-button preview__action preview__close" type="button">
+            Close
+          </button>
+          <button
+            id="deleteImage"
+            class="glass-button preview__action preview__delete"
+            type="button"
+            aria-label="Hold for 2 seconds to delete image"
+          >
+            <span class="preview__delete-progress" aria-hidden="true"></span>
+            <span id="deleteLabel" class="preview__delete-label">Delete</span>
+          </button>
+        </div>
       </div>
     </dialog>
 
     <div id="toast" class="toast glass-panel" role="status" aria-live="polite"></div>
-    <script type="module" src="/app.js?v=9"></script>
+    <script type="module" src="/app.js?v=11"></script>
   </body>
 </html>
