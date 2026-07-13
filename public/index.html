@@ -7,9 +7,12 @@
     <title>Private Gallery</title>
     <link rel="icon" href="/favicon.png" type="image/png" />
     <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin />
+    <style>
+      body.is-booting #login { visibility: hidden; }
+    </style>
     <link rel="stylesheet" href="/styles.css?v=8" />
   </head>
-  <body>
+  <body class="is-booting">
     <main id="gallery" class="gallery" aria-hidden="true">
       <div id="viewport" class="gallery__viewport" aria-label="Infinite image gallery">
         <div id="world" class="gallery__world"></div>
@@ -46,7 +49,7 @@
           required
         />
         <button id="goButton" class="go-button" type="submit" aria-label="Enter gallery">
-          <img src="/icons/go.svg" alt="" draggable="false" />
+          <img src="/icons/go.svg?v=2" alt="" draggable="false" />
         </button>
       </form>
     </section>
@@ -75,6 +78,6 @@
     </dialog>
 
     <div id="toast" class="toast glass-panel" role="status" aria-live="polite"></div>
-    <script type="module" src="/app.js?v=13"></script>
+    <script type="module" src="/app.js?v=14"></script>
   </body>
 </html>

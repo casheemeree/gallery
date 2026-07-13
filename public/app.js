@@ -750,6 +750,8 @@ async function bootstrap() {
     }
   } catch {
     // The login screen is already the safe fallback.
+  } finally {
+    document.body.classList.remove("is-booting");
   }
 }
 
