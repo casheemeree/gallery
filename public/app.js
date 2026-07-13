@@ -32,10 +32,36 @@ const state = {
   pointerY: 0,
   dragDistance: 0,
   pressedImageIndex: null,
+  pendingPreviewIndex: null,
   moved: false,
 };
 
 const encoder = new TextEncoder();
+const thumbnailJobs = new Set();
+const imageObserver = "IntersectionObserver" in window
+  ? new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          const image = entry.target;
+          if (image.dataset.src) {
+            image.addEventListener(
+              "load",
+              () => {
+                const imageRecord = state.images[Number(image.dataset.imageIndex)];
+                if (imageRecord?.needsThumbnail) backfillThumbnail(imageRecord, image);
+              },
+              { once: true },
+            );
+            image.src = image.dataset.src;
+            image.removeAttribute("data-src");
+          }
+          imageObserver.unobserve(image);
+        });
+      },
+      { root: viewport, rootMargin: "300px" },
+    )
+  : null;
 
 function bytesToBase64Url(bytes) {
   let binary = "";
@@ -170,10 +196,18 @@ function createTile(image, x, y, width, height, imageIndex) {
   button.dataset.imageIndex = String(imageIndex % state.images.length);
   button.style.cssText = `left:${x}px;top:${y}px;width:${width}px;height:${height}px`;
   const img = document.createElement("img");
-  img.src = image.url;
+  const source = image.thumbnailUrl || image.url;
+  if (imageObserver) {
+    img.dataset.src = source;
+    imageObserver.observe(img);
+  } else {
+    img.src = source;
+  }
   img.alt = "";
-  img.loading = "eager";
+  img.dataset.imageIndex = String(imageIndex % state.images.length);
+  img.loading = "lazy";
   img.decoding = "async";
+  img.fetchPriority = "low";
   button.append(img);
   return button;
 }
@@ -227,6 +261,7 @@ function createBoard(boardColumn, boardRow) {
 }
 
 function renderWorld(resetPosition = false) {
+  imageObserver?.disconnect();
   calculateLayout();
   world.replaceChildren();
   if (!state.images.length) return;
@@ -312,21 +347,24 @@ function finishDrag(event) {
   const shouldOpenPreview = event.type === "pointerup" && !state.moved && Number.isInteger(imageIndex);
   state.dragging = false;
   state.pressedImageIndex = null;
+  state.pendingPreviewIndex = shouldOpenPreview ? imageIndex : null;
   viewport.classList.remove("is-dragging");
   if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
-  if (shouldOpenPreview) {
-    const image = state.images[imageIndex];
-    if (image) openPreview(image);
-  }
 }
 
 viewport.addEventListener("pointerup", finishDrag);
 viewport.addEventListener("pointercancel", finishDrag);
 
 viewport.addEventListener("click", (event) => {
-  // Pointer clicks are handled on pointerup so pointer capture cannot change
-  // their target. Keep native keyboard activation for the image buttons.
-  if (event.detail !== 0) return;
+  if (event.detail !== 0) {
+    const imageIndex = state.pendingPreviewIndex;
+    state.pendingPreviewIndex = null;
+    if (!Number.isInteger(imageIndex)) return;
+    const image = state.images[imageIndex];
+    if (image) openPreview(image);
+    return;
+  }
+  // Keyboard activation keeps the native button click target.
   const tile = event.target.closest(".gallery__tile");
   if (!tile) return;
   const image = state.images[Number(tile.dataset.imageIndex)];
@@ -336,12 +374,35 @@ viewport.addEventListener("click", (event) => {
 function openPreview(image) {
   if (!preview.open) preview.showModal();
   previewImage.alt = image.name || "Gallery image";
+  previewImage.dataset.sourceWidth = String(image.width || 1);
+  previewImage.dataset.sourceHeight = String(image.height || 1);
   previewImage.src = image.url;
 }
 
 function closePreviewDialog() {
   preview.close();
   previewImage.removeAttribute("src");
+  previewImage.removeAttribute("data-source-width");
+  previewImage.removeAttribute("data-source-height");
+}
+
+function clickHitsRenderedPreviewImage(event) {
+  const rect = previewImage.getBoundingClientRect();
+  const sourceWidth = Number(previewImage.dataset.sourceWidth) || previewImage.naturalWidth;
+  const sourceHeight = Number(previewImage.dataset.sourceHeight) || previewImage.naturalHeight;
+  if (!sourceWidth || !sourceHeight || !rect.width || !rect.height) return false;
+
+  const scale = Math.min(rect.width / sourceWidth, rect.height / sourceHeight);
+  const renderedWidth = sourceWidth * scale;
+  const renderedHeight = sourceHeight * scale;
+  const left = rect.left + (rect.width - renderedWidth) / 2;
+  const top = rect.top + (rect.height - renderedHeight) / 2;
+  return (
+    event.clientX >= left &&
+    event.clientX <= left + renderedWidth &&
+    event.clientY >= top &&
+    event.clientY <= top + renderedHeight
+  );
 }
 
 closePreview.addEventListener("click", closePreviewDialog);
@@ -350,10 +411,59 @@ preview.addEventListener("cancel", (event) => {
   closePreviewDialog();
 });
 preview.addEventListener("click", (event) => {
-  if (event.target.classList.contains("preview__backdrop")) closePreviewDialog();
+  if (event.target.closest("#closePreview")) return;
+  if (event.target === previewImage && clickHitsRenderedPreviewImage(event)) return;
+  closePreviewDialog();
 });
 
 addButton.addEventListener("click", () => fileInput.click());
+
+async function thumbnailBlob(drawable, sourceWidth, sourceHeight) {
+  const longestSide = Math.max(sourceWidth, sourceHeight);
+  const scale = Math.min(1, 1024 / longestSide);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+  canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+  const context = canvas.getContext("2d", { alpha: true });
+  context.drawImage(drawable, 0, 0, canvas.width, canvas.height);
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/webp", 0.82));
+  if (!blob) throw new Error("thumbnail_failed");
+  return blob;
+}
+
+async function createThumbnail(file) {
+  const bitmap = await createImageBitmap(file);
+  try {
+    return await thumbnailBlob(bitmap, bitmap.width, bitmap.height);
+  } finally {
+    bitmap.close();
+  }
+}
+
+async function uploadThumbnail(image, thumbnail) {
+  const payload = await api(`/api/images/${image.id}/thumbnail`, {
+    method: "POST",
+    headers: {
+      "Content-Type": thumbnail.type,
+      "X-CSRF-Token": state.csrf,
+    },
+    body: thumbnail,
+  });
+  image.thumbnailUrl = payload.thumbnailUrl;
+  image.needsThumbnail = false;
+}
+
+async function backfillThumbnail(image, loadedImage) {
+  if (thumbnailJobs.has(image.id)) return;
+  thumbnailJobs.add(image.id);
+  try {
+    const thumbnail = await thumbnailBlob(loadedImage, loadedImage.naturalWidth, loadedImage.naturalHeight);
+    await uploadThumbnail(image, thumbnail);
+  } catch {
+    // The original remains usable; a future page load can retry the backfill.
+  }
+}
+
 fileInput.addEventListener("change", async () => {
   const file = fileInput.files?.[0];
   if (!file) return;
@@ -364,6 +474,7 @@ fileInput.addEventListener("change", async () => {
   addButton.classList.add("is-uploading");
   addButton.disabled = true;
   try {
+    const thumbnailPromise = createThumbnail(file).catch(() => null);
     const payload = await api("/api/images", {
       method: "POST",
       headers: {
@@ -373,6 +484,10 @@ fileInput.addEventListener("change", async () => {
       },
       body: file,
     });
+    const thumbnail = await thumbnailPromise;
+    if (thumbnail) {
+      await uploadThumbnail(payload.image, thumbnail).catch(() => null);
+    }
     state.images.unshift(payload.image);
     renderWorld(false);
     showToast("Image added");

@@ -7,7 +7,7 @@
     <title>Private Gallery</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin />
-    <link rel="stylesheet" href="/styles.css?v=4" />
+    <link rel="stylesheet" href="/styles.css?v=5" />
   </head>
   <body>
     <main id="gallery" class="gallery" aria-hidden="true">
@@ -16,9 +16,7 @@
       </div>
 
       <button id="addButton" class="glass-button add-button" type="button" aria-label="Add image">
-        <svg viewBox="0 0 20 20" aria-hidden="true">
-          <path d="M10 3.2v13.6M3.2 10h13.6" />
-        </svg>
+        <img src="/icons/add.svg" alt="" draggable="false" />
       </button>
       <input id="fileInput" class="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp,image/gif" />
 
@@ -39,9 +37,7 @@
           required
         />
         <button id="goButton" class="go-button" type="submit" aria-label="Enter gallery">
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            <path d="M2.4 8h10.8M8.7 3.5 13.2 8l-4.5 4.5" />
-          </svg>
+          <img src="/icons/go.svg" alt="" draggable="false" />
         </button>
       </form>
     </section>
@@ -50,9 +46,7 @@
       <div class="preview__backdrop"></div>
       <div class="preview__content">
         <button id="closePreview" class="glass-button preview__close" type="button" aria-label="Close preview">
-          <svg viewBox="0 0 20 20" aria-hidden="true">
-            <path d="m4.7 4.7 10.6 10.6M15.3 4.7 4.7 15.3" />
-          </svg>
+          <img src="/icons/close.svg" alt="" draggable="false" />
         </button>
         <figure class="preview__figure">
           <img id="previewImage" alt="" />
@@ -61,6 +55,6 @@
     </dialog>
 
     <div id="toast" class="toast glass-panel" role="status" aria-live="polite"></div>
-    <script type="module" src="/app.js?v=4"></script>
+    <script type="module" src="/app.js?v=9"></script>
   </body>
 </html>

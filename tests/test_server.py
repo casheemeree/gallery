@@ -3,7 +3,13 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import json
+import os
+import tempfile
+import time
 import unittest
+from pathlib import Path
+from unittest import mock
 
 import config
 import server
@@ -32,6 +38,73 @@ class AuthTests(unittest.TestCase):
     def test_access_key_round_trip(self) -> None:
         key = server.derive_access_key(config.ACCESS_CODE)
         self.assertEqual(server.b64url_decode(server.b64url(key)), key)
+
+    def test_persistent_cookie_uses_long_lifetime_and_security_flags(self) -> None:
+        cookie = server.session_cookie("token")
+        self.assertIn(f"Max-Age={config.SESSION_TTL_SECONDS}", cookie)
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=Strict", cookie)
+
+
+class AccessCodeStoreTests(unittest.TestCase):
+    def test_json_stores_multiple_derived_keys_without_plain_codes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "access-codes.json"
+            store = {
+                "version": 1,
+                "salt": "test-gallery-salt",
+                "iterations": 180_000,
+                "codes": [
+                    {
+                        "id": "owner",
+                        "label": "Owner",
+                        "access_key": server.b64url(server.derive_access_key("1234567890", "test-gallery-salt", 180_000)),
+                        "created_at": 1,
+                    },
+                    {
+                        "id": "guest",
+                        "label": "Guest",
+                        "access_key": server.b64url(server.derive_access_key("0987654321", "test-gallery-salt", 180_000)),
+                        "created_at": 2,
+                    },
+                ],
+            }
+            server.write_access_store(store, path)
+            raw = path.read_text(encoding="utf-8")
+            self.assertNotIn("1234567890", raw)
+            self.assertNotIn("0987654321", raw)
+            self.assertEqual(len(server.access_code_set(path)[2]), 2)
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+
+    @mock.patch.object(server, "prompt_new_access_code", return_value="1234567890")
+    def test_cli_adds_code_to_new_json(self, _prompt: mock.Mock) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "access-codes.json"
+            self.assertEqual(server.add_access_code_cli("Local", path), 0)
+            store = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(store["codes"][0]["label"], "Local")
+            self.assertNotIn("1234567890", path.read_text(encoding="utf-8"))
+            code_id = store["codes"][0]["id"]
+            with mock.patch.object(config, "DATABASE_PATH", Path(temporary_directory) / "missing.sqlite3"):
+                self.assertEqual(server.remove_access_code_cli(code_id, path), 0)
+            self.assertEqual(server.load_access_store(path)["codes"], [])
+
+    def test_session_token_is_persisted_only_as_a_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / "gallery.sqlite3"
+            with mock.patch.object(config, "DATABASE_PATH", database_path):
+                server.init_storage()
+                token = "browser-cookie-token"
+                with server.db_connect() as db:
+                    db.execute(
+                        """INSERT INTO sessions
+                           (token_hash, csrf_token, access_code_id, expires_at, created_at)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (server.session_token_hash(token), "csrf", "owner", int(time.time()) + 60, int(time.time())),
+                    )
+                    row = db.execute("SELECT token_hash FROM sessions").fetchone()
+                self.assertNotEqual(row["token_hash"], token)
+                self.assertEqual(row["token_hash"], hashlib.sha256(token.encode("ascii")).hexdigest())
 
 
 class ImageTests(unittest.TestCase):

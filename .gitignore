@@ -4,5 +4,7 @@ __pycache__/
 .env
 data/*.sqlite3
 data/*.sqlite3-*
+data/access-codes.json
+data/access-codes.json.tmp
 uploads/*
 !uploads/.gitkeep

@@ -1,16 +1,15 @@
 server {
     listen 80;
-    server_name gallery.example.com;
+    server_name capy.gallery;
     return 301 https://$host$request_uri;
 }
 
 server {
     listen 443 ssl http2;
-    server_name gallery.example.com;
+    server_name capy.gallery;
 
-    # Replace with your certificate paths (for example, from Certbot).
-    ssl_certificate /etc/letsencrypt/live/gallery.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/gallery.example.com/privkey.pem;
+    ssl_certificate /etc/letsencrypt/live/capy.gallery/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/capy.gallery/privkey.pem;
 
     client_max_body_size 15m;
 

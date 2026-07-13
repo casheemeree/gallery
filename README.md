@@ -14,6 +14,9 @@ ACCESS_CODE=1234567890 python3 server.py
 
 Open <http://127.0.0.1:8080>. The default local code is `1234567890`.
 
+The first production access code should be created with the access-code manager
+described below; the local fallback is used only while the JSON file is absent.
+
 ## Interaction
 
 - Drag in any direction to pan the canvas.
@@ -22,35 +25,59 @@ Open <http://127.0.0.1:8080>. The default local code is `1234567890`.
 - Use the centered plus button to upload JPEG, PNG, WebP, or GIF files up to 15 MB.
 - Under 600 px the gallery uses 3 columns; at 600 px and above it uses 5.
 
+Only images close to the viewport are requested. New uploads also receive a
+browser-generated WebP thumbnail (up to 1024 px) for the gallery while preview
+continues to use the original. Versioned image URLs are cached for one year.
+
 ## Authentication model
 
 The browser requests a one-time nonce, derives a key from the 10-digit code with
 PBKDF2, and sends an HMAC proof. The plain code is never included in the HTTP
-request. Production stores only the derived `ACCESS_KEY` verifier in `.env`, not
-the original code. Successful verification creates an HttpOnly, SameSite session
-cookie and a separate CSRF token for uploads.
+request. Production stores only derived verifiers in `data/access-codes.json`,
+never the original codes. Successful verification creates an HttpOnly,
+SameSite=Strict session cookie and a separate CSRF token for uploads.
+
+Sessions are stored in SQLite using a hash of the browser token, so restarting the
+server does not sign visitors out. The cookie lasts up to 400 days and its expiry
+is refreshed whenever the gallery is opened. Removing an access code also revokes
+every session created with that code.
 
 This protocol must still run over HTTPS: a ten-digit code has limited entropy,
 and TLS protects the session and proof from network observers. Failed attempts
 are rate-limited. For a larger public service, replace the shared code with user
 accounts or a PAKE-based login.
 
-## Configuration
+## Access codes
 
-Generate the production verifier and its matching random salt in a trusted
-terminal; input is hidden:
+The JSON file is stored at `data/access-codes.json` by default and is excluded
+from Git. Manage it through the CLI so plain codes are never written to disk:
 
 ```bash
-python3 server.py generate-access-key
+python3 server.py access-code add "Owner"
+python3 server.py access-code add "Guest"
+python3 server.py access-code list
+python3 server.py access-code remove <id>
 ```
 
-Copy `.env.example` to `/srv/capi-gallery/.env`, paste both printed values, set
-permissions to `600`, and never add the file to Git. The standard-library server
-reads environment variables directly, so either export them in your shell or let
-the included systemd unit load the file.
+`add` asks for the 10-digit code twice using hidden input. The JSON contains a
+shared random salt, PBKDF2 settings, labels, IDs and derived keys only. It is
+written atomically with permissions `600`. Labels help identify a code; removal
+uses the short ID printed by `list`.
 
-Uploads are stored in `uploads/`; metadata is stored in `data/gallery.sqlite3`.
-Both are intentionally excluded from Git and should be backed up separately.
+Set `ACCESS_CODES_PATH` in `.env` if the file should live elsewhere. On the
+server, run these commands as the service account so it retains ownership of the
+file, for example `sudo -u www-data python3 server.py access-code list`.
+
+## Configuration
+
+Copy `.env.example` to `/srv/capi-gallery/.env`, set permissions to `600`, and
+never add it to Git. The standard-library server reads environment variables
+directly, so either export them in your shell or let the included systemd unit
+load the file. Production must use HTTPS with `COOKIE_SECURE=1`.
+
+Uploads and generated thumbnails are stored in `uploads/`; image metadata and
+persistent sessions are stored in `data/gallery.sqlite3`. These files and the
+access-code JSON are excluded from Git and should be backed up separately.
 
 ## GitHub → server deployment
 

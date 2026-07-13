@@ -16,6 +16,7 @@ import struct
 import sys
 import time
 from collections import defaultdict, deque
+from email.utils import formatdate
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,7 +27,8 @@ import config
 
 
 CHALLENGES: dict[str, tuple[float, str]] = {}
-SESSIONS: dict[str, tuple[float, str]] = {}
+SESSION_CACHE: dict[str, tuple[int, str, str]] = {}
+ACCESS_CODE_SET_CACHE: tuple[float, tuple[str, int, list[dict]]] | None = None
 FAILED_ATTEMPTS: defaultdict[str, deque[float]] = defaultdict(deque)
 ALLOWED_MIME = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 
@@ -43,12 +45,12 @@ def b64url_decode(value: str) -> bytes:
         raise ValueError("invalid base64url value") from error
 
 
-def derive_access_key(code: str, salt: str | None = None) -> bytes:
+def derive_access_key(code: str, salt: str | None = None, iterations: int | None = None) -> bytes:
     return hashlib.pbkdf2_hmac(
         "sha256",
         code.encode("utf-8"),
         (salt or config.PBKDF2_SALT).encode("utf-8"),
-        config.PBKDF2_ITERATIONS,
+        iterations or config.PBKDF2_ITERATIONS,
         dklen=32,
     )
 
@@ -73,7 +75,109 @@ def configured_access_key() -> bytes:
     return derive_access_key(config.ACCESS_CODE)
 
 
-SERVER_ACCESS_KEY = configured_access_key()
+def new_access_store() -> dict:
+    return {
+        "version": 1,
+        "salt": b64url(secrets.token_bytes(16)),
+        "iterations": config.PBKDF2_ITERATIONS,
+        "codes": [],
+    }
+
+
+def validate_access_store(payload: object) -> dict:
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        raise RuntimeError("Access code JSON must use version 1")
+    salt = payload.get("salt")
+    iterations = payload.get("iterations")
+    codes = payload.get("codes")
+    if not isinstance(salt, str) or not (8 <= len(salt) <= 128):
+        raise RuntimeError("Access code JSON has an invalid salt")
+    if not isinstance(iterations, int) or not (100_000 <= iterations <= 2_000_000):
+        raise RuntimeError("Access code JSON has invalid PBKDF2 iterations")
+    if not isinstance(codes, list):
+        raise RuntimeError("Access code JSON must contain a codes array")
+
+    normalized = {"version": 1, "salt": salt, "iterations": iterations, "codes": []}
+    seen_ids: set[str] = set()
+    for item in codes:
+        if not isinstance(item, dict):
+            raise RuntimeError("Each access code entry must be an object")
+        code_id = item.get("id")
+        label = item.get("label")
+        encoded_key = item.get("access_key")
+        if not isinstance(code_id, str) or not code_id or len(code_id) > 64 or code_id in seen_ids:
+            raise RuntimeError("Access code JSON contains an invalid or duplicate id")
+        if not isinstance(label, str) or not label.strip() or len(label) > 80:
+            raise RuntimeError("Access code JSON contains an invalid label")
+        if not isinstance(encoded_key, str):
+            raise RuntimeError("Access code JSON contains an invalid access_key")
+        try:
+            key = b64url_decode(encoded_key)
+        except ValueError as error:
+            raise RuntimeError("Access code JSON contains an invalid access_key") from error
+        if len(key) != 32:
+            raise RuntimeError("Every access_key must decode to exactly 32 bytes")
+        seen_ids.add(code_id)
+        normalized["codes"].append(
+            {
+                "id": code_id,
+                "label": label.strip(),
+                "access_key": encoded_key,
+                "created_at": int(item.get("created_at", 0)),
+            }
+        )
+    return normalized
+
+
+def load_access_store(path: Path | None = None) -> dict | None:
+    store_path = path or config.ACCESS_CODES_PATH
+    if not store_path.exists():
+        return None
+    try:
+        payload = json.loads(store_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"Cannot read access code JSON: {store_path}") from error
+    return validate_access_store(payload)
+
+
+def write_access_store(payload: dict, path: Path | None = None) -> None:
+    global ACCESS_CODE_SET_CACHE
+    store_path = path or config.ACCESS_CODES_PATH
+    normalized = validate_access_store(payload)
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = store_path.with_name(store_path.name + ".tmp")
+    temporary.write_text(json.dumps(normalized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.chmod(0o600)
+    temporary.replace(store_path)
+    store_path.chmod(0o600)
+    if store_path == config.ACCESS_CODES_PATH:
+        ACCESS_CODE_SET_CACHE = None
+
+
+def access_code_set(path: Path | None = None) -> tuple[str, int, list[dict]]:
+    global ACCESS_CODE_SET_CACHE
+    if path is None and ACCESS_CODE_SET_CACHE and ACCESS_CODE_SET_CACHE[0] > time.monotonic():
+        return ACCESS_CODE_SET_CACHE[1]
+    store = load_access_store(path)
+    if store is None:
+        result = (
+            config.PBKDF2_SALT,
+            config.PBKDF2_ITERATIONS,
+            [{"id": "legacy", "label": "Environment", "key": configured_access_key()}],
+        )
+    else:
+        codes = [
+            {"id": item["id"], "label": item["label"], "key": b64url_decode(item["access_key"])}
+            for item in store["codes"]
+        ]
+        result = (store["salt"], store["iterations"], codes)
+    if path is None:
+        ACCESS_CODE_SET_CACHE = (time.monotonic() + 2, result)
+    return result
+
+
+def active_access_code_ids() -> set[str]:
+    return {item["id"] for item in access_code_set()[2]}
 
 
 def detect_image_type(data: bytes) -> str | None:
@@ -175,6 +279,7 @@ def sync_public_images(db: sqlite3.Connection | None = None) -> int:
 
 def init_storage() -> None:
     config.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    config.THUMBNAIL_DIR.mkdir(parents=True, exist_ok=True)
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     with db_connect() as db:
         db.execute(
@@ -191,6 +296,21 @@ def init_storage() -> None:
             )
             """
         )
+        image_columns = {row[1] for row in db.execute("PRAGMA table_info(images)").fetchall()}
+        if "thumbnail_filename" not in image_columns:
+            db.execute("ALTER TABLE images ADD COLUMN thumbnail_filename TEXT")
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sessions (
+                token_hash TEXT PRIMARY KEY,
+                csrf_token TEXT NOT NULL,
+                access_code_id TEXT NOT NULL,
+                expires_at INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            )
+            """
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS sessions_expires_at ON sessions(expires_at)")
         sync_public_images(db)
 
 
@@ -199,9 +319,25 @@ def prune_state() -> None:
     for nonce, (expires, _) in list(CHALLENGES.items()):
         if expires < now:
             CHALLENGES.pop(nonce, None)
-    for token, (expires, _) in list(SESSIONS.items()):
-        if expires < now:
-            SESSIONS.pop(token, None)
+    with db_connect() as db:
+        db.execute("DELETE FROM sessions WHERE expires_at < ?", (int(now),))
+    for token_hash, record in list(SESSION_CACHE.items()):
+        if record[0] < now:
+            SESSION_CACHE.pop(token_hash, None)
+
+
+def session_token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("ascii")).hexdigest()
+
+
+def session_cookie(token: str, max_age: int | None = None) -> str:
+    lifetime = config.SESSION_TTL_SECONDS if max_age is None else max_age
+    secure = "; Secure" if config.COOKIE_SECURE else ""
+    expires = formatdate(time.time() + max(0, lifetime), usegmt=True)
+    return (
+        f"gallery_session={token}; Path=/; HttpOnly; SameSite=Strict; "
+        f"Max-Age={lifetime}; Expires={expires}; Priority=High{secure}"
+    )
 
 
 class GalleryHandler(BaseHTTPRequestHandler):
@@ -235,18 +371,38 @@ class GalleryHandler(BaseHTTPRequestHandler):
         except (json.JSONDecodeError, UnicodeDecodeError):
             return None
 
-    def current_session(self) -> tuple[str, str] | None:
-        prune_state()
+    def current_session(self) -> tuple[str, str, str] | None:
         cookie = SimpleCookie(self.headers.get("Cookie", ""))
         morsel = cookie.get("gallery_session")
         if not morsel:
             return None
-        record = SESSIONS.get(morsel.value)
-        if not record or record[0] < time.time():
+        token_hash = session_token_hash(morsel.value)
+        cached = SESSION_CACHE.get(token_hash)
+        if cached:
+            expires_at, csrf_token, access_code_id = cached
+        else:
+            with db_connect() as db:
+                record = db.execute(
+                    "SELECT csrf_token, access_code_id, expires_at FROM sessions WHERE token_hash = ?",
+                    (token_hash,),
+                ).fetchone()
+            if not record:
+                return None
+            expires_at = record["expires_at"]
+            csrf_token = record["csrf_token"]
+            access_code_id = record["access_code_id"]
+            SESSION_CACHE[token_hash] = (expires_at, csrf_token, access_code_id)
+        if expires_at < time.time():
+            SESSION_CACHE.pop(token_hash, None)
             return None
-        return morsel.value, record[1]
+        if access_code_id not in active_access_code_ids():
+            with db_connect() as db:
+                db.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+            SESSION_CACHE.pop(token_hash, None)
+            return None
+        return morsel.value, csrf_token, access_code_id
 
-    def require_auth(self, csrf: bool = False) -> tuple[str, str] | None:
+    def require_auth(self, csrf: bool = False) -> tuple[str, str, str] | None:
         session = self.current_session()
         if not session:
             self.send_json({"error": "unauthorized"}, HTTPStatus.UNAUTHORIZED)
@@ -262,14 +418,33 @@ class GalleryHandler(BaseHTTPRequestHandler):
             return self.auth_challenge()
         if path == "/api/auth/session":
             session = self.current_session()
-            return self.send_json({"authenticated": bool(session), "csrf": session[1] if session else None})
+            headers = None
+            if session:
+                expires_at = int(time.time()) + config.SESSION_TTL_SECONDS
+                with db_connect() as db:
+                    db.execute(
+                        "UPDATE sessions SET expires_at = ? WHERE token_hash = ?",
+                        (expires_at, session_token_hash(session[0])),
+                    )
+                SESSION_CACHE[session_token_hash(session[0])] = (expires_at, session[1], session[2])
+                headers = {"Set-Cookie": session_cookie(session[0])}
+            return self.send_json(
+                {"authenticated": bool(session), "csrf": session[1] if session else None},
+                headers=headers,
+            )
         if path == "/api/images":
             if not self.require_auth():
                 return
             return self.list_images()
+        if path.startswith("/images/"):
+            if not self.require_auth():
+                return
+            return self.serve_public(path)
         if path.startswith("/uploads/"):
             if not self.require_auth():
                 return
+            if path.startswith("/uploads/thumbnails/"):
+                return self.serve_thumbnail(path.removeprefix("/uploads/thumbnails/"))
             return self.serve_upload(path.removeprefix("/uploads/"))
         return self.serve_public(path)
 
@@ -283,17 +458,25 @@ class GalleryHandler(BaseHTTPRequestHandler):
             if not self.require_auth(csrf=True):
                 return
             return self.upload_image()
+        if path.startswith("/api/images/") and path.endswith("/thumbnail"):
+            if not self.require_auth(csrf=True):
+                return
+            raw_id = path.removeprefix("/api/images/").removesuffix("/thumbnail").strip("/")
+            if not raw_id.isdigit():
+                return self.send_json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
+            return self.upload_thumbnail(int(raw_id))
         self.send_json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
 
     def auth_challenge(self) -> None:
         prune_state()
+        salt, iterations, _ = access_code_set()
         nonce = b64url(secrets.token_bytes(24))
         CHALLENGES[nonce] = (time.time() + config.CHALLENGE_TTL_SECONDS, self.client_address[0])
         self.send_json(
             {
                 "nonce": nonce,
-                "salt": config.PBKDF2_SALT,
-                "iterations": config.PBKDF2_ITERATIONS,
+                "salt": salt,
+                "iterations": iterations,
                 "algorithm": "PBKDF2-HMAC-SHA256",
             }
         )
@@ -316,8 +499,13 @@ class GalleryHandler(BaseHTTPRequestHandler):
         proof = str(body.get("proof", ""))
         challenge = CHALLENGES.pop(nonce, None)
         valid_challenge = challenge and challenge[0] >= now and challenge[1] == ip
-        expected = derive_proof_for_key(SERVER_ACCESS_KEY, nonce) if valid_challenge else "invalid"
-        if not valid_challenge or not hmac.compare_digest(proof, expected):
+        matched_access_code_id = None
+        if valid_challenge:
+            for access_code in access_code_set()[2]:
+                expected = derive_proof_for_key(access_code["key"], nonce)
+                if hmac.compare_digest(proof, expected) and matched_access_code_id is None:
+                    matched_access_code_id = access_code["id"]
+        if not valid_challenge or matched_access_code_id is None:
             failures.append(now)
             self.send_json({"error": "wrong_code"}, HTTPStatus.UNAUTHORIZED)
             return
@@ -325,33 +513,53 @@ class GalleryHandler(BaseHTTPRequestHandler):
         FAILED_ATTEMPTS.pop(ip, None)
         token = b64url(secrets.token_bytes(32))
         csrf_token = b64url(secrets.token_bytes(24))
-        SESSIONS[token] = (now + config.SESSION_TTL_SECONDS, csrf_token)
-        secure = "; Secure" if config.COOKIE_SECURE else ""
-        cookie = f"gallery_session={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={config.SESSION_TTL_SECONDS}{secure}"
-        self.send_json({"ok": True, "csrf": csrf_token}, headers={"Set-Cookie": cookie})
+        expires_at = int(now) + config.SESSION_TTL_SECONDS
+        token_hash = session_token_hash(token)
+        with db_connect() as db:
+            db.execute(
+                """INSERT INTO sessions
+                   (token_hash, csrf_token, access_code_id, expires_at, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (token_hash, csrf_token, matched_access_code_id, expires_at, int(now)),
+            )
+        SESSION_CACHE[token_hash] = (expires_at, csrf_token, matched_access_code_id)
+        self.send_json({"ok": True, "csrf": csrf_token}, headers={"Set-Cookie": session_cookie(token)})
 
     def logout(self) -> None:
         session = self.current_session()
         if session:
-            SESSIONS.pop(session[0], None)
+            token_hash = session_token_hash(session[0])
+            with db_connect() as db:
+                db.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+            SESSION_CACHE.pop(token_hash, None)
         self.send_json(
             {"ok": True},
-            headers={"Set-Cookie": "gallery_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"},
+            headers={"Set-Cookie": session_cookie("", 0)},
         )
 
     def list_images(self) -> None:
         sync_public_images()
         with db_connect() as db:
             rows = db.execute(
-                "SELECT id, filename, original_name, mime, width, height, source, created_at FROM images ORDER BY id DESC"
+                """SELECT id, filename, original_name, mime, width, height, source,
+                          thumbnail_filename, created_at
+                   FROM images ORDER BY id DESC"""
             ).fetchall()
         images = []
         for row in rows:
             prefix = "/images/" if row["source"] in {"demo", "public"} else "/uploads/"
+            image_url = f"{prefix}{row['filename']}?v={row['created_at']}"
+            thumbnail_url = (
+                "/uploads/thumbnails/" + row["thumbnail_filename"]
+                if row["thumbnail_filename"]
+                else image_url
+            )
             images.append(
                 {
                     "id": row["id"],
-                    "url": prefix + row["filename"],
+                    "url": image_url,
+                    "thumbnailUrl": thumbnail_url,
+                    "needsThumbnail": row["source"] == "upload" and not row["thumbnail_filename"],
                     "name": row["original_name"],
                     "width": row["width"],
                     "height": row["height"],
@@ -398,6 +606,8 @@ class GalleryHandler(BaseHTTPRequestHandler):
                 "image": {
                     "id": image_id,
                     "url": "/uploads/" + filename,
+                    "thumbnailUrl": "/uploads/" + filename,
+                    "needsThumbnail": True,
                     "name": original_name,
                     "width": dims[0],
                     "height": dims[1],
@@ -407,12 +617,63 @@ class GalleryHandler(BaseHTTPRequestHandler):
             HTTPStatus.CREATED,
         )
 
+    def upload_thumbnail(self, image_id: int) -> None:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length <= 0 or length > 3 * 1024 * 1024:
+            self.send_json({"error": "thumbnail_too_large"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            return
+
+        data = self.rfile.read(length)
+        actual_mime = detect_image_type(data)
+        if actual_mime not in {"image/jpeg", "image/png", "image/webp"}:
+            self.send_json({"error": "invalid_thumbnail"}, HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+            return
+        dims = image_dimensions(data, actual_mime)
+        if not dims or min(dims) < 1 or max(dims) > 2048:
+            self.send_json({"error": "invalid_thumbnail_dimensions"}, HTTPStatus.UNPROCESSABLE_ENTITY)
+            return
+
+        with db_connect() as db:
+            image = db.execute(
+                "SELECT id, thumbnail_filename FROM images WHERE id = ? AND source = 'upload'",
+                (image_id,),
+            ).fetchone()
+            if not image:
+                self.send_json({"error": "not_found"}, HTTPStatus.NOT_FOUND)
+                return
+            extensions = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
+            thumbnail_name = f"{image_id}-{secrets.token_hex(8)}{extensions[actual_mime]}"
+            destination = config.THUMBNAIL_DIR / thumbnail_name
+            destination.write_bytes(data)
+            db.execute(
+                "UPDATE images SET thumbnail_filename = ? WHERE id = ?",
+                (thumbnail_name, image_id),
+            )
+
+        old_thumbnail = image["thumbnail_filename"]
+        if old_thumbnail:
+            (config.THUMBNAIL_DIR / old_thumbnail).unlink(missing_ok=True)
+        self.send_json(
+            {"thumbnailUrl": "/uploads/thumbnails/" + thumbnail_name},
+            HTTPStatus.CREATED,
+        )
+
     def serve_upload(self, raw_name: str) -> None:
         name = Path(unquote(raw_name)).name
         if not name or name != unquote(raw_name):
             self.send_error(HTTPStatus.NOT_FOUND)
             return
-        self.serve_file(config.UPLOAD_DIR / name, cache="private, max-age=86400")
+        self.serve_file(config.UPLOAD_DIR / name, cache="private, max-age=31536000, immutable")
+
+    def serve_thumbnail(self, raw_name: str) -> None:
+        name = Path(unquote(raw_name)).name
+        if not name or name != unquote(raw_name):
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        self.serve_file(config.THUMBNAIL_DIR / name, cache="private, max-age=31536000, immutable")
 
     def serve_public(self, raw_path: str) -> None:
         path = unquote(raw_path)
@@ -422,7 +683,11 @@ class GalleryHandler(BaseHTTPRequestHandler):
         if any(part == ".." for part in relative.parts):
             self.send_error(HTTPStatus.NOT_FOUND)
             return
-        cache = "public, max-age=86400" if relative.parts and relative.parts[0] == "images" else "no-cache"
+        cache = (
+            "private, max-age=31536000, immutable"
+            if relative.parts and relative.parts[0] == "images"
+            else "no-cache"
+        )
         self.serve_file(config.PUBLIC_DIR / relative, cache=cache)
 
     def serve_file(self, path: Path, cache: str) -> None:
@@ -443,6 +708,7 @@ class GalleryHandler(BaseHTTPRequestHandler):
 
 
 def create_server(host: str = config.HOST, port: int = config.PORT) -> ThreadingHTTPServer:
+    access_code_set()
     init_storage()
     return ThreadingHTTPServer((host, port), GalleryHandler)
 
@@ -462,11 +728,104 @@ def generate_access_key_cli() -> int:
     return 0
 
 
+def prompt_new_access_code() -> str | None:
+    code = getpass.getpass("10-digit access code: ").strip()
+    confirmation = getpass.getpass("Repeat access code: ").strip()
+    if code != confirmation:
+        print("Codes do not match", file=sys.stderr)
+        return None
+    if len(code) != 10 or not code.isdigit():
+        print("Code must contain exactly 10 digits", file=sys.stderr)
+        return None
+    return code
+
+
+def add_access_code_cli(label: str, path: Path | None = None) -> int:
+    store_path = path or config.ACCESS_CODES_PATH
+    store = load_access_store(store_path) or new_access_store()
+    code = prompt_new_access_code()
+    if code is None:
+        return 1
+    access_key = b64url(derive_access_key(code, store["salt"], store["iterations"]))
+    if any(hmac.compare_digest(item["access_key"], access_key) for item in store["codes"]):
+        print("This access code already exists", file=sys.stderr)
+        return 1
+    code_id = secrets.token_hex(4)
+    store["codes"].append(
+        {
+            "id": code_id,
+            "label": label.strip(),
+            "access_key": access_key,
+            "created_at": int(time.time()),
+        }
+    )
+    write_access_store(store, store_path)
+    print(f"Added {label.strip()} ({code_id}) to {store_path}")
+    return 0
+
+
+def list_access_codes_cli(path: Path | None = None) -> int:
+    store_path = path or config.ACCESS_CODES_PATH
+    store = load_access_store(store_path)
+    if store is None or not store["codes"]:
+        print(f"No access codes in {store_path}")
+        return 0
+    for item in store["codes"]:
+        created = time.strftime("%Y-%m-%d", time.localtime(item["created_at"])) if item["created_at"] else "unknown"
+        print(f"{item['id']}  {item['label']}  created {created}")
+    return 0
+
+
+def remove_access_code_cli(code_id: str, path: Path | None = None) -> int:
+    global ACCESS_CODE_SET_CACHE
+    store_path = path or config.ACCESS_CODES_PATH
+    store = load_access_store(store_path)
+    if store is None:
+        print(f"Access code file does not exist: {store_path}", file=sys.stderr)
+        return 1
+    remaining = [item for item in store["codes"] if item["id"] != code_id]
+    if len(remaining) == len(store["codes"]):
+        print(f"Unknown access code id: {code_id}", file=sys.stderr)
+        return 1
+    store["codes"] = remaining
+    write_access_store(store, store_path)
+    ACCESS_CODE_SET_CACHE = None
+    for token_hash, record in list(SESSION_CACHE.items()):
+        if record[2] == code_id:
+            SESSION_CACHE.pop(token_hash, None)
+    if config.DATABASE_PATH.exists():
+        try:
+            with db_connect() as db:
+                db.execute("DELETE FROM sessions WHERE access_code_id = ?", (code_id,))
+        except sqlite3.OperationalError:
+            pass
+    print(f"Removed {code_id} from {store_path}; its sessions were revoked")
+    return 0
+
+
+def print_usage() -> None:
+    print(
+        "Usage:\n"
+        "  python3 server.py\n"
+        "  python3 server.py access-code add <label>\n"
+        "  python3 server.py access-code list\n"
+        "  python3 server.py access-code remove <id>\n"
+        "  python3 server.py generate-access-key",
+        file=sys.stderr,
+    )
+
+
 if __name__ == "__main__":
     if sys.argv[1:] == ["generate-access-key"]:
         raise SystemExit(generate_access_key_cli())
+    if sys.argv[1:3] == ["access-code", "add"] and len(sys.argv) == 4 and sys.argv[3].strip():
+        raise SystemExit(add_access_code_cli(sys.argv[3]))
+    if sys.argv[1:] == ["access-code", "list"]:
+        raise SystemExit(list_access_codes_cli())
+    if sys.argv[1:3] == ["access-code", "remove"] and len(sys.argv) == 4:
+        raise SystemExit(remove_access_code_cli(sys.argv[3]))
     if sys.argv[1:]:
-        print("Usage: python3 server.py [generate-access-key]", file=sys.stderr)
+        print_usage()
         raise SystemExit(2)
     server = create_server()
     print(f"Private Gallery running at http://{config.HOST}:{config.PORT}")
