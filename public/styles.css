@@ -343,6 +343,10 @@ button {
   opacity: 1;
 }
 
+.preview:focus {
+  outline: none;
+}
+
 .preview::backdrop {
   background: transparent;
 }
@@ -544,6 +548,13 @@ button {
 
   .preview__figure {
     max-height: calc(100vh - 92px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+  }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .preview__action:focus,
+  .preview__action:focus-visible {
+    outline: none;
   }
 }
 

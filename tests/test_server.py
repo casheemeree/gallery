@@ -65,6 +65,10 @@ class PublicUiTests(unittest.TestCase):
         self.assertIn("maximum-scale=1", html)
         self.assertIn("user-scalable=no", html)
 
+    def test_preview_receives_initial_dialog_focus(self) -> None:
+        html = (config.PUBLIC_DIR / "index.html").read_text(encoding="utf-8")
+        self.assertIn('<dialog id="preview" class="preview" tabindex="-1">', html)
+
 
 class AccessCodeStoreTests(unittest.TestCase):
     def test_json_stores_multiple_derived_keys_without_plain_codes(self) -> None:

@@ -454,7 +454,10 @@ function openPreview(image) {
   previewImage.dataset.sourceHeight = String(image.height || 1);
   previewImage.src = image.url;
   state.previewOpenedAt = performance.now();
-  if (!preview.open) preview.showModal();
+  if (!preview.open) {
+    preview.showModal();
+    preview.focus({ preventScroll: true });
+  }
 }
 
 function closePreviewDialog() {
