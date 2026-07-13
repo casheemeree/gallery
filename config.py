@@ -1,4 +1,4 @@
-"""Server-side configuration for CAPI Gallery.
+"""Server-side configuration for the private gallery.
 
 Never expose this module through the static file handler. Production values should
 be supplied with environment variables; the defaults are for local development.

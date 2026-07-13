@@ -1,5 +1,5 @@
 [Unit]
-Description=CAPI private gallery
+Description=Private image gallery
 After=network.target
 
 [Service]

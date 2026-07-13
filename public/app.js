@@ -10,20 +10,18 @@ const addButton = document.querySelector("#addButton");
 const fileInput = document.querySelector("#fileInput");
 const preview = document.querySelector("#preview");
 const previewImage = document.querySelector("#previewImage");
-const previewCaption = document.querySelector("#previewCaption");
 const closePreview = document.querySelector("#closePreview");
-const scrollHint = document.querySelector("#scrollHint");
 const toast = document.querySelector("#toast");
 
 const state = {
   images: [],
   csrf: sessionStorage.getItem("gallery_csrf") || "",
   columns: 5,
+  boardColumns: 10,
   rows: 6,
   gap: 24,
   tileWidth: 0,
   portraitHeight: 0,
-  landscapeHeight: 0,
   rowPitch: 0,
   boardWidth: 0,
   boardHeight: 0,
@@ -34,6 +32,7 @@ const state = {
   pointerX: 0,
   pointerY: 0,
   moved: false,
+  suppressClick: false,
 };
 
 const encoder = new TextEncoder();
@@ -100,7 +99,6 @@ async function enterGallery() {
   gallery.classList.add("is-visible");
   gallery.setAttribute("aria-hidden", "false");
   login.classList.add("is-hidden");
-  window.setTimeout(() => scrollHint.classList.add("is-hidden"), 4200);
 }
 
 function setLoginError(message) {
@@ -145,13 +143,19 @@ codeInput.addEventListener("input", () => {
 
 function calculateLayout() {
   state.columns = window.innerWidth < 600 ? 3 : 5;
+  // A double-width board always contains an even number of columns. That
+  // preserves the checkerboard phase when identical boards repeat.
+  state.boardColumns = state.columns * 2;
   state.gap = window.innerWidth < 600 ? 10 : 24;
   state.tileWidth = (window.innerWidth - state.gap * (state.columns - 1)) / state.columns;
   state.portraitHeight = state.tileWidth * (4 / 3);
-  state.landscapeHeight = state.tileWidth * 0.75;
   state.rowPitch = state.portraitHeight - state.gap;
-  state.rows = Math.max(5, Math.ceil(window.innerHeight / state.rowPitch) + 2);
-  state.boardWidth = window.innerWidth;
+  const rowsForViewport = Math.ceil(window.innerHeight / state.rowPitch) + 2;
+  const imagesPerRow = state.boardColumns / 2;
+  const rowsForImages = Math.ceil(state.images.length / imagesPerRow);
+  const requiredRows = Math.max(6, rowsForViewport, rowsForImages);
+  state.rows = requiredRows % 2 === 0 ? requiredRows : requiredRows + 1;
+  state.boardWidth = state.boardColumns * (state.tileWidth + state.gap);
   state.boardHeight = state.rows * state.rowPitch;
 }
 
@@ -175,27 +179,48 @@ function createTile(image, x, y, width, height, imageIndex) {
   return button;
 }
 
+function imageBox(image) {
+  const sourceWidth = Math.max(1, Number(image.width) || 1);
+  const sourceHeight = Math.max(1, Number(image.height) || 1);
+  let width;
+  let height;
+
+  if (sourceHeight > sourceWidth) {
+    // Portraits are scaled by height, matching the 236.8 × 315.89 frame in
+    // the supplied layout. Very wide near-square portraits are capped so they
+    // cannot enter the neighbouring checkerboard cell.
+    height = state.portraitHeight;
+    width = height * (sourceWidth / sourceHeight);
+    if (width > state.tileWidth) {
+      width = state.tileWidth;
+      height = width * (sourceHeight / sourceWidth);
+    }
+  } else {
+    // Landscape and square images are scaled by the available column width.
+    width = state.tileWidth;
+    height = width * (sourceHeight / sourceWidth);
+  }
+
+  return { width, height };
+}
+
 function createBoard(boardColumn, boardRow) {
   const board = document.createElement("div");
   board.className = "gallery__board";
   board.style.cssText = `left:${boardColumn * state.boardWidth}px;top:${boardRow * state.boardHeight}px;width:${state.boardWidth}px;height:${state.boardHeight}px`;
-  let imageIndex = boardRow * state.columns + boardColumn * 3;
+  // Every board is an identical copy. Repositioning the world by exactly one
+  // board therefore changes only coordinates, never the visible content.
+  let imageIndex = 0;
 
   for (let row = 0; row < state.rows; row += 1) {
-    const globalRow = boardRow * state.rows + row;
-    for (let column = 0; column < state.columns; column += 1) {
-      // Continue the checkerboard through board boundaries. Without the global
-      // row, an odd-sized board could place two tall cards directly together
-      // at the wrap seam.
-      if ((globalRow + column) % 2 !== 0) continue;
+    for (let column = 0; column < state.boardColumns; column += 1) {
+      if ((row + column) % 2 !== 0) continue;
       const image = tileImage(imageIndex);
       if (!image) continue;
-      const isPortrait = image.height >= image.width;
-      const displayPortrait = (imageIndex + globalRow) % 3 !== 1 ? isPortrait : !isPortrait;
-      const height = displayPortrait ? state.portraitHeight : state.landscapeHeight;
-      const x = column * (state.tileWidth + state.gap);
-      const y = row * state.rowPitch + (state.portraitHeight - height) / 2;
-      board.append(createTile(image, x, y, state.tileWidth, height, imageIndex));
+      const box = imageBox(image);
+      const x = column * (state.tileWidth + state.gap) + (state.tileWidth - box.width) / 2;
+      const y = row * state.rowPitch + (state.portraitHeight - box.height) / 2;
+      board.append(createTile(image, x, y, box.width, box.height, imageIndex));
       imageIndex += 1;
     }
   }
@@ -246,7 +271,6 @@ function moveWorld(deltaX, deltaY) {
   state.offsetY += deltaY;
   normalizePosition();
   paintPosition();
-  scrollHint.classList.add("is-hidden");
 }
 
 viewport.addEventListener(
@@ -281,6 +305,12 @@ viewport.addEventListener("pointermove", (event) => {
 });
 
 function finishDrag(event) {
+  if (state.moved) {
+    state.suppressClick = true;
+    window.setTimeout(() => {
+      state.suppressClick = false;
+    }, 0);
+  }
   state.dragging = false;
   viewport.classList.remove("is-dragging");
   if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
@@ -290,8 +320,7 @@ viewport.addEventListener("pointerup", finishDrag);
 viewport.addEventListener("pointercancel", finishDrag);
 
 viewport.addEventListener("click", (event) => {
-  if (state.moved) {
-    state.moved = false;
+  if (state.suppressClick) {
     event.preventDefault();
     return;
   }
@@ -304,8 +333,7 @@ viewport.addEventListener("click", (event) => {
 function openPreview(image) {
   previewImage.src = image.url;
   previewImage.alt = image.name || "Gallery image";
-  previewCaption.textContent = image.name || "";
-  preview.showModal();
+  if (!preview.open) preview.showModal();
 }
 
 function closePreviewDialog() {
@@ -314,6 +342,10 @@ function closePreviewDialog() {
 }
 
 closePreview.addEventListener("click", closePreviewDialog);
+preview.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closePreviewDialog();
+});
 preview.addEventListener("click", (event) => {
   if (event.target.classList.contains("preview__backdrop")) closePreviewDialog();
 });

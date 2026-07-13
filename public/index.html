@@ -4,17 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#ffffff" />
-    <title>CAPI — Private Gallery</title>
+    <title>Private Gallery</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/styles.css?v=3" />
   </head>
   <body>
     <main id="gallery" class="gallery" aria-hidden="true">
       <div id="viewport" class="gallery__viewport" aria-label="Infinite image gallery">
         <div id="world" class="gallery__world"></div>
       </div>
-
-      <div class="gallery__mark" aria-hidden="true">CAPI</div>
 
       <button id="addButton" class="glass-button add-button" type="button" aria-label="Add image">
         <svg viewBox="0 0 20 20" aria-hidden="true">
@@ -23,10 +21,6 @@
       </button>
       <input id="fileInput" class="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp,image/gif" />
 
-      <div id="scrollHint" class="scroll-hint glass-panel" aria-hidden="true">
-        <span>DRAG TO EXPLORE</span>
-        <svg viewBox="0 0 24 24"><path d="M5 12h14M15 8l4 4-4 4M9 8l-4 4 4 4" /></svg>
-      </div>
     </main>
 
     <section id="login" class="login" aria-label="Access code">
@@ -63,12 +57,11 @@
         </button>
         <figure class="preview__figure">
           <img id="previewImage" alt="" />
-          <figcaption id="previewCaption"></figcaption>
         </figure>
       </div>
     </dialog>
 
     <div id="toast" class="toast glass-panel" role="status" aria-live="polite"></div>
-    <script type="module" src="/app.js"></script>
+    <script type="module" src="/app.js?v=3"></script>
   </body>
 </html>

@@ -38,6 +38,22 @@ class ImageTests(unittest.TestCase):
         data = b"\x89PNG\r\n\x1a\n" + b"\0" * 8 + (640).to_bytes(4, "big") + (480).to_bytes(4, "big")
         self.assertEqual(server.image_dimensions(data, "image/png"), (640, 480))
 
+    def test_reads_extended_webp_dimensions(self) -> None:
+        data = b"RIFF" + b"\0" * 4 + b"WEBPVP8X" + b"\0" * 8
+        data += (511).to_bytes(3, "little") + (682).to_bytes(3, "little")
+        self.assertEqual(server.image_dimensions(data, "image/webp"), (512, 683))
+
+    def test_reads_lossy_webp_dimensions(self) -> None:
+        data = b"RIFF" + b"\0" * 4 + b"WEBPVP8 " + b"\0" * 7 + b"\x9d\x01\x2a"
+        data += (640).to_bytes(2, "little") + (480).to_bytes(2, "little")
+        self.assertEqual(server.image_dimensions(data, "image/webp"), (640, 480))
+
+    def test_reads_lossless_webp_dimensions(self) -> None:
+        width, height = 321, 654
+        bits = (width - 1) | ((height - 1) << 14)
+        data = b"RIFF" + b"\0" * 4 + b"WEBPVP8L" + b"\0" * 4 + b"\x2f" + bits.to_bytes(4, "little")
+        self.assertEqual(server.image_dimensions(data, "image/webp"), (width, height))
+
     def test_sanitizes_original_filename(self) -> None:
         self.assertEqual(server.safe_original_name("../../my%20photo!.jpg"), "my photo.jpg")
 

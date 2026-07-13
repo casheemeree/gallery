@@ -8,7 +8,6 @@ import hashlib
 import hmac
 import json
 import mimetypes
-import os
 import secrets
 import sqlite3
 import struct
@@ -63,11 +62,20 @@ def image_dimensions(data: bytes, mime: str) -> tuple[int, int] | None:
             return struct.unpack(">II", data[16:24])
         if mime == "image/gif" and len(data) >= 10:
             return struct.unpack("<HH", data[6:10])
-        if mime == "image/webp" and len(data) >= 30:
+        if mime == "image/webp" and len(data) >= 25:
             kind = data[12:16]
-            if kind == b"VP8X":
+            if kind == b"VP8X" and len(data) >= 30:
                 w = 1 + int.from_bytes(data[24:27], "little")
                 h = 1 + int.from_bytes(data[27:30], "little")
+                return w, h
+            if kind == b"VP8 " and len(data) >= 30 and data[23:26] == b"\x9d\x01\x2a":
+                w = int.from_bytes(data[26:28], "little") & 0x3FFF
+                h = int.from_bytes(data[28:30], "little") & 0x3FFF
+                return w, h
+            if kind == b"VP8L" and data[20] == 0x2F:
+                bits = int.from_bytes(data[21:25], "little")
+                w = (bits & 0x3FFF) + 1
+                h = ((bits >> 14) & 0x3FFF) + 1
                 return w, h
         if mime == "image/jpeg":
             i = 2
@@ -100,6 +108,38 @@ def db_connect() -> sqlite3.Connection:
     return connection
 
 
+def sync_public_images(db: sqlite3.Connection | None = None) -> int:
+    """Index supported files copied into public/images without duplicating rows."""
+    own_connection = db is None
+    connection = db or db_connect()
+    added = 0
+    try:
+        image_dir = config.PUBLIC_DIR / "images"
+        for path in sorted(image_dir.iterdir() if image_dir.exists() else []):
+            if not path.is_file():
+                continue
+            data = path.read_bytes()
+            mime = detect_image_type(data)
+            if mime not in ALLOWED_MIME:
+                continue
+            dims = image_dimensions(data, mime)
+            if not dims or min(dims) < 1 or max(dims) > 30_000:
+                continue
+            cursor = connection.execute(
+                """INSERT OR IGNORE INTO images
+                   (filename, original_name, mime, width, height, source, created_at)
+                   VALUES (?, ?, ?, ?, ?, 'public', ?)""",
+                (path.name, path.name, mime, dims[0], dims[1], int(path.stat().st_mtime)),
+            )
+            added += cursor.rowcount
+        if own_connection:
+            connection.commit()
+    finally:
+        if own_connection:
+            connection.close()
+    return added
+
+
 def init_storage() -> None:
     config.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -118,17 +158,7 @@ def init_storage() -> None:
             )
             """
         )
-        count = db.execute("SELECT COUNT(*) FROM images").fetchone()[0]
-        if count == 0:
-            for path in sorted((config.PUBLIC_DIR / "images").glob("demo-*.jpg")):
-                data = path.read_bytes()
-                dims = image_dimensions(data, "image/jpeg") or (900, 1200)
-                db.execute(
-                    """INSERT OR IGNORE INTO images
-                       (filename, original_name, mime, width, height, source, created_at)
-                       VALUES (?, ?, ?, ?, ?, 'demo', ?)""",
-                    (path.name, path.name, "image/jpeg", dims[0], dims[1], int(path.stat().st_mtime)),
-                )
+        sync_public_images(db)
 
 
 def prune_state() -> None:
@@ -142,7 +172,7 @@ def prune_state() -> None:
 
 
 class GalleryHandler(BaseHTTPRequestHandler):
-    server_version = "CapiGallery/1.0"
+    server_version = "PrivateGallery/1.0"
 
     def log_message(self, fmt: str, *args: object) -> None:
         print(f"[{self.log_date_time_string()}] {self.client_address[0]} {fmt % args}")
@@ -277,13 +307,14 @@ class GalleryHandler(BaseHTTPRequestHandler):
         )
 
     def list_images(self) -> None:
+        sync_public_images()
         with db_connect() as db:
             rows = db.execute(
                 "SELECT id, filename, original_name, mime, width, height, source, created_at FROM images ORDER BY id DESC"
             ).fetchall()
         images = []
         for row in rows:
-            prefix = "/images/" if row["source"] == "demo" else "/uploads/"
+            prefix = "/images/" if row["source"] in {"demo", "public"} else "/uploads/"
             images.append(
                 {
                     "id": row["id"],
@@ -358,7 +389,8 @@ class GalleryHandler(BaseHTTPRequestHandler):
         if any(part == ".." for part in relative.parts):
             self.send_error(HTTPStatus.NOT_FOUND)
             return
-        self.serve_file(config.PUBLIC_DIR / relative, cache="public, max-age=3600")
+        cache = "public, max-age=86400" if relative.parts and relative.parts[0] == "images" else "no-cache"
+        self.serve_file(config.PUBLIC_DIR / relative, cache=cache)
 
     def serve_file(self, path: Path, cache: str) -> None:
         if not path.is_file():
@@ -384,7 +416,7 @@ def create_server(host: str = config.HOST, port: int = config.PORT) -> Threading
 
 if __name__ == "__main__":
     server = create_server()
-    print(f"CAPI Gallery running at http://{config.HOST}:{config.PORT}")
+    print(f"Private Gallery running at http://{config.HOST}:{config.PORT}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

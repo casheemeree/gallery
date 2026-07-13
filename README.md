@@ -1,4 +1,4 @@
-# CAPI Gallery
+# Private Gallery
 
 A private, two-directional infinite image gallery with a checkerboard rhythm,
 responsive 3/5-column layouts, encrypted challenge-response login, image upload,
