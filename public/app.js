@@ -45,7 +45,11 @@ const ACCESS_CODE_PATTERN = /^[A-Za-z0-9]{10}$/;
 const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
 const DELETE_HOLD_MS = 2000;
 const PREVIEW_CLICK_GUARD_MS = 260;
+const IMAGE_LOAD_MARGIN = 120;
+const THUMBNAIL_LONGEST_SIDE = 1024;
 const ZOOM_KEYS = new Set(["+", "-", "="]);
+const deferredImages = new Set();
+let deferredImageFrame = 0;
 
 function blockZoomGesture(event) {
   event.preventDefault();
@@ -120,20 +124,50 @@ function handleTileImageLoad(image, imageRecord) {
   if (imageRecord?.needsThumbnail) backfillThumbnail(imageRecord, image);
 }
 
+function startTileImageLoad(image) {
+  const source = image.dataset.src;
+  if (!source) return;
+  deferredImages.delete(image);
+  imageObserver?.unobserve(image);
+  image.removeAttribute("data-src");
+  image.fetchPriority = "auto";
+  image.src = source;
+}
+
+function loadVisibleTileImages() {
+  deferredImageFrame = 0;
+  const viewportRect = viewport.getBoundingClientRect();
+  const left = viewportRect.left - IMAGE_LOAD_MARGIN;
+  const top = viewportRect.top - IMAGE_LOAD_MARGIN;
+  const right = viewportRect.right + IMAGE_LOAD_MARGIN;
+  const bottom = viewportRect.bottom + IMAGE_LOAD_MARGIN;
+
+  deferredImages.forEach((image) => {
+    if (!image.isConnected) {
+      deferredImages.delete(image);
+      return;
+    }
+    const rect = image.getBoundingClientRect();
+    if (rect.right >= left && rect.left <= right && rect.bottom >= top && rect.top <= bottom) {
+      startTileImageLoad(image);
+    }
+  });
+}
+
+function scheduleVisibleTileImages() {
+  if (deferredImageFrame) return;
+  deferredImageFrame = window.requestAnimationFrame(loadVisibleTileImages);
+}
+
 const imageObserver = "IntersectionObserver" in window
   ? new IntersectionObserver(
       (entries) => {
         entries.forEach((entry) => {
           if (!entry.isIntersecting) return;
-          const image = entry.target;
-          if (image.dataset.src) {
-            image.src = image.dataset.src;
-            image.removeAttribute("data-src");
-          }
-          imageObserver.unobserve(image);
+          startTileImageLoad(entry.target);
         });
       },
-      { root: viewport, rootMargin: "300px" },
+      { root: viewport, rootMargin: `${IMAGE_LOAD_MARGIN}px` },
     )
   : null;
 
@@ -273,15 +307,18 @@ function createTile(image, x, y, width, height, imageIndex) {
   const img = document.createElement("img");
   const source = image.thumbnailUrl || image.url;
   img.addEventListener("load", () => handleTileImageLoad(img, image), { once: true });
+  img.addEventListener("error", () => {
+    const fallbackSource = img.dataset.fallbackSrc;
+    if (!fallbackSource) return;
+    img.removeAttribute("data-fallback-src");
+    img.src = fallbackSource;
+  });
   img.style.setProperty("--bubble-delay", `${(imageIndex * 37) % 260}ms`);
-  if (imageObserver) {
-    img.dataset.src = source;
-    imageObserver.observe(img);
-  } else {
-    img.src = source;
-  }
+  img.dataset.src = source;
+  if (source !== image.url) img.dataset.fallbackSrc = image.url;
+  deferredImages.add(img);
+  imageObserver?.observe(img);
   img.alt = "";
-  img.loading = "lazy";
   img.decoding = "async";
   img.fetchPriority = "low";
   button.append(img);
@@ -339,6 +376,9 @@ function createBoard(boardColumn, boardRow) {
 
 function renderWorld(resetPosition = false) {
   imageObserver?.disconnect();
+  window.cancelAnimationFrame(deferredImageFrame);
+  deferredImageFrame = 0;
+  deferredImages.clear();
   calculateLayout();
   world.replaceChildren();
   if (!state.images.length) return;
@@ -359,6 +399,10 @@ function renderWorld(resetPosition = false) {
     normalizePosition();
   }
   paintPosition();
+  // Safari occasionally misses IntersectionObserver notifications for
+  // descendants of a translated world. Geometry-based loading guarantees the
+  // first visible tiles still receive a src without requiring user movement.
+  scheduleVisibleTileImages();
 }
 
 function wrap(value, size) {
@@ -382,6 +426,7 @@ function moveWorld(deltaX, deltaY) {
   state.offsetY += deltaY;
   normalizePosition();
   paintPosition();
+  scheduleVisibleTileImages();
 }
 
 viewport.addEventListener(
@@ -651,13 +696,18 @@ addButton.addEventListener("click", () => fileInput.click());
 
 async function thumbnailBlob(drawable, sourceWidth, sourceHeight) {
   const longestSide = Math.max(sourceWidth, sourceHeight);
-  const scale = Math.min(1, 1024 / longestSide);
+  const scale = Math.min(1, THUMBNAIL_LONGEST_SIDE / longestSide);
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.round(sourceWidth * scale));
   canvas.height = Math.max(1, Math.round(sourceHeight * scale));
-  const context = canvas.getContext("2d", { alpha: true });
+  const context = canvas.getContext("2d", { alpha: false });
+  context.fillStyle = "#f7f7f5";
+  context.fillRect(0, 0, canvas.width, canvas.height);
   context.drawImage(drawable, 0, 0, canvas.width, canvas.height);
-  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/webp", 0.82));
+  // JPEG encoding is supported by every target Safari version. Some Safari
+  // builds silently fall back from WebP to a multi-megabyte PNG, defeating the
+  // purpose of a thumbnail and exhausting mobile decode memory.
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.82));
   if (!blob) throw new Error("thumbnail_failed");
   return blob;
 }
